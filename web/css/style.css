@@ -181,3 +181,5 @@ label.settings-label { display: block; font-size: 12px; color: var(--muted); mar
 .season-row { display: flex; align-items: center; gap: 6px; justify-content: center; }
 .season-hemi { font-size: 10px; color: var(--muted); letter-spacing: 0.5px; }
 .season-hemi b { color: var(--text); font-weight: 600; }
+
+#ground-veg, #ground-clouds { accent-color: var(--accent2); width: 14px; height: 14px; cursor: pointer; }

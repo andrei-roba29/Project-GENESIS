@@ -288,3 +288,129 @@ def test_ground_mesh_uvs_are_not_flipped_relative_to_rows():
     assert "UNPACK_FLIP_Y_WEBGL, false" in src
     assert re.search(r"uv\[k \* 2 \+ 1\] = i / \(n - 1\);", src), \
         "V must track the image row index when the upload is not flipped"
+
+
+# ---------------------------------------------------------------------------
+# Vegetation and cloud data for the close-up view
+# ---------------------------------------------------------------------------
+def test_region_payload_carries_vegetation_and_clouds():
+    """The ground view draws trees/clouds from the simulation, so the payload
+    must carry the real per-cell fields, not a decorative pattern."""
+    import base64
+    from genesis.server import region_payload
+    # Use the module-level engine; generate a small world for speed.
+    import genesis.server as srv
+    from genesis.config import PlanetConfig
+    from genesis.engine import Engine
+    srv.engine = Engine(PlanetConfig(seed=42))
+    srv.engine.generate()
+
+    d = region_payload("elevation", -30, 120, 24, 64)
+    cells = d["size"] ** 2
+    for group in ("trees", "shrubs", "grasses", "ferns"):
+        assert group in d["veg"], f"missing vegetation group {group}"
+        raw = base64.b64decode(d["veg"][group])
+        assert len(raw) == cells, f"{group} raster must be one byte per cell"
+    cloud = base64.b64decode(d["cloud"])
+    assert len(cloud) == cells
+    assert len(base64.b64decode(d["biome_ids"])) == cells
+    assert d["biome_names"], "biome names are needed for legend/labels"
+
+
+def test_vegetation_raster_tracks_land_not_water():
+    """Vegetation cover must follow the simulation: present on land, absent
+    in open ocean. This is the check that keeps the decor honest."""
+    import base64
+    import numpy as np
+    import genesis.server as srv
+    from genesis.config import PlanetConfig
+    from genesis.engine import Engine
+    srv.engine = Engine(PlanetConfig(seed=42))
+    srv.engine.generate()
+
+    d = srv.region_payload("elevation", -30, 120, 24, 96)
+    n = d["size"]
+    heights = np.frombuffer(base64.b64decode(d["elevation"]), dtype="<i2").reshape(n, n) / 10.0
+    trees = np.frombuffer(base64.b64decode(d["veg"]["trees"]), dtype=np.uint8).reshape(n, n)
+
+    sea = heights < -50
+    land = heights > 50
+    assert sea.any() and land.any(), "patch should span coast"
+    # Open ocean carries essentially nothing; what little shows up is
+    # bilinear bleed from the shoreline.
+    assert trees[sea].mean() < 10.0, "no trees should grow in open ocean"
+    # Land must carry real cover and far more of it than the sea.
+    assert trees[land].max() > 0, "land should carry some tree cover"
+    assert trees[land].mean() > trees[sea].mean() * 3, "vegetation must follow land"
+
+
+def test_cloud_field_is_a_fraction_everywhere(world):
+    p = world.planet
+    assert p.cloud.min() >= 0.0 and p.cloud.max() <= 1.0
+    # Not a constant: a uniform deck would be decoration, not weather.
+    assert float(p.cloud.std()) > 0.01
+
+
+def test_ground_decor_source_is_regression_guarded():
+    """The decor must be derived from rasters, never scattered randomly."""
+    src = _globe_source()
+    assert "_storeRasters" in src
+    assert "this.rasters" in src
+    # Placement must consult the real cover fields and skip water.
+    assert "no vegetation in water" in src or "h <= 0" in src
+    assert "showVegetation" in src and "showClouds" in src
+
+
+def test_decor_heights_are_not_divided_twice():
+    """_heights holds metres (decimetres were divided by 10 on decode).
+
+    Dividing again put every plant 10x too low, i.e. buried in the terrain —
+    the exact bug that made the decor invisible.
+    """
+    src = _globe_source()
+    build = src[src.index("_buildDecor() {"):src.index("_buildDecorBuffers()")]
+    assert "this._heights[k] / 10" not in build, "height already in metres"
+    assert "const h = this._heights[k];" in build
+
+
+def test_decor_buffers_are_released_before_rebuild():
+    """Zooming rebuilds the billboards, which must not leak GPU buffers."""
+    src = _globe_source()
+    body = src[src.index("_buildDecorBuffers() {"):]
+    body = body[:body.index("_drawDecor")]
+    assert "deleteBuffer" in body
+
+
+def test_cloud_deck_does_not_follow_the_camera():
+    """Clouds sit at a fixed altitude; tying them to this.dist made the deck
+    slide up and down whenever the player zoomed."""
+    src = _globe_source()
+    # _buildCloudPlane is the last method in the class, so slice to the end.
+    body = src[src.index("_buildCloudPlane() {"):]
+    assert "this.dist * 0.10" not in body
+    # A new tile must not keep drawing the previous tile's cloud field.
+    assert "this._cloudBuilt = false" in src
+
+
+def test_cloud_deck_only_shows_thick_cloud():
+    """A continuous 0..1 cover field drawn as an opaque deck blankets the map;
+    only the thicker part should be visible."""
+    src = _globe_source()
+    body = src[src.index("_buildCloudPlane() {"):]
+    assert "LO" in body and "HI" in body, "cloud cover needs a visibility range"
+
+
+def test_shader_attributes_have_matching_pointers():
+    """Every enabled attribute must be fed from a buffer that still has data.
+
+    aTint was once a constant while aShade is per-instance; using an attribute
+    name the shader does not declare silently draws nothing.
+    """
+    src = _globe_source()
+    for shader in ("GROUND_VERT", "DECOR_VERT", "CLOUD_VERT"):
+        body = src[src.index(f"const {shader} = `"):]
+        body = body[:body.index("`;")]
+        assert "aTint" not in body
+    decor = src[src.index("_drawDecor(mvp, eye) {"):]
+    decor = decor[:decor.index("_drawClouds")]
+    assert "vertexAttribPointer(this.dShade" in decor

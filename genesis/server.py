@@ -244,11 +244,33 @@ def region_payload(layer: str, lat0: float, lon0: float, span: float, size: int)
     base = surface._sample_bilinear(p.elevation, row, col)
     height = base + detail * np.clip(np.abs(base) * 0.06 + 40.0, 40.0, 260.0)
     dm = np.clip(height * 10.0, -32768, 32767).astype(np.int16)
+
+    # --- per-cell surface data for the close-up decor ---------------------
+    # Everything here is sampled from the running simulation, never invented:
+    # tree/shrub/grass cover decides where vegetation stands, and the cloud
+    # field decides where cloud shadows fall.
+    veg_masks = {}
+    for group in ("trees", "shrubs", "grasses", "ferns"):
+        field = surface._sample_bilinear(p.veg[group], row, col)
+        veg_masks[group] = base64.b64encode(
+            np.clip(field * 255.0, 0, 255).astype(np.uint8).tobytes()
+        ).decode("ascii")
+    clouds = surface._sample_bilinear(p.cloud, row, col)
+    biome_id = p.biome[
+        np.clip(row.astype(int), 0, p.height - 1),
+        np.clip(col.astype(int) % p.width, 0, p.width - 1),
+    ]
     payload = {
         "lat": lat0, "lon": lon0, "span": span, "size": size,
         "radius_km": engine.cfg.radius_km,
         "elevation": base64.b64encode(dm.tobytes()).decode("ascii"),
-        "exaggeration": 6.0,
+        "veg": veg_masks,
+        "cloud": base64.b64encode(
+            np.clip(clouds * 255.0, 0, 255).astype(np.uint8).tobytes()
+        ).decode("ascii"),
+        "biome_ids": base64.b64encode(biome_id.astype(np.uint8).tobytes()).decode("ascii"),
+        "biome_names": list(BIOME_NAMES),
+        "exaggeration": 4.0,
         "min_m": float(base.min()), "max_m": float(base.max()),
         "land_fraction": float((base > 0).mean()),
     }
@@ -312,8 +334,21 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code: int, body: bytes, ctype: str = "application/json"):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
+        # Region payloads are mostly zero-filled uint8 rasters, so gzip pays for
+        # itself many times over. Browsers ask for it automatically; anything
+        # else still gets plain bytes.
+        accept = self.headers.get("Accept-Encoding", "") or ""
+        # PNGs are already deflated; recompressing only burns CPU.
+        already = ctype.startswith("image/")
+        if "gzip" in accept.lower() and len(body) > 512 and not already:
+            import gzip as _gzip
+            body = _gzip.compress(body, 6)
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Encoding", "gzip")
+        else:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

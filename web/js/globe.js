@@ -428,15 +428,20 @@
   const GROUND_FRAG = `
     precision mediump float;
     uniform sampler2D uTex;
+    uniform sampler2D uCloudTex;
     uniform vec3 uEye;
     uniform vec3 uFogColor;
     uniform vec2 uFogRange;
     uniform float uWaterZ;
+    uniform float uShadowAmt;
     varying vec2 vUV;
     varying vec3 vPos;
     void main() {
       vec4 tex = texture2D(uTex, vUV);
       vec3 col = tex.rgb;
+      // Terrain shade from the cloud field directly overhead.
+      float cloud = texture2D(uCloudTex, vUV).a;
+      col *= 1.0 - uShadowAmt * cloud;
       // Water sits below sea level: tint it and darken with depth.
       if (vPos.z < uWaterZ) {
         float depth = clamp((uWaterZ - vPos.z) * 2.5, 0.0, 0.65);
@@ -465,6 +470,79 @@
     void main() {
       float t = pow(clamp(vY, 0.0, 1.0), 0.7);
       gl_FragColor = vec4(mix(uSkyHorizon, uSkyTop, t), 1.0);
+    }`;
+
+  /* Vegetation billboards: alpha-tested so leaves have shape, tinted by a
+   * per-instance colour attribute so one forest is not one flat green. */
+  // Real-world sizes for the plants behind the ground view's decor.
+  // Trees ~20 m tall and ~7 m across, shrubs and grass scaled down from there.
+  const PLANT_H_M = 20.0;
+  const PLANT_W_M = 7.0;
+
+  const DECOR_VERT = `
+    attribute vec3 aPos;
+    attribute vec2 aUV;
+    attribute float aShade;
+    uniform mat4 uMVP;
+    varying vec2 vUV;
+    varying float vShade;
+    varying vec3 vPos;
+    void main() {
+      vUV = aUV;
+      vShade = aShade;
+      vPos = aPos;
+      gl_Position = uMVP * vec4(aPos, 1.0);
+    }`;
+
+  const DECOR_FRAG = `
+    precision mediump float;
+    uniform sampler2D uTex;
+    uniform vec3 uEye;
+    uniform vec3 uFogColor;
+    uniform vec2 uFogRange;
+    uniform vec3 uTint;
+    varying vec2 vUV;
+    varying float vShade;
+    varying vec3 vPos;
+    void main() {
+      vec4 tex = texture2D(uTex, vUV);
+      if (tex.a < 0.35) discard;
+      // Per-instance shade keeps a stand from looking like one flat colour.
+      vec3 col = tex.rgb * uTint * vShade;
+      float d = distance(uEye, vPos);
+      float f = clamp((d - uFogRange.x) / max(uFogRange.y - uFogRange.x, 1e-3), 0.0, 1.0);
+      gl_FragColor = vec4(mix(col, uFogColor, f * f * 0.9), 1.0);
+    }`;
+
+  /* Cloud deck: a translucent plane lifted above the terrain, drawn from the
+   * simulation's own cloud-cover field. */
+  const CLOUD_VERT = `
+    attribute vec3 aPos;
+    attribute vec2 aUV;
+    uniform mat4 uMVP;
+    varying vec2 vUV;
+    varying vec3 vPos;
+    void main() {
+      vUV = aUV;
+      vPos = aPos;
+      gl_Position = uMVP * vec4(aPos, 1.0);
+    }`;
+
+  const CLOUD_FRAG = `
+    precision mediump float;
+    uniform sampler2D uTex;
+    uniform vec3 uFogColor;
+    uniform vec3 uEye;
+    uniform vec2 uFogRange;
+    varying vec2 vUV;
+    varying vec3 vPos;
+    void main() {
+      float a = texture2D(uTex, vUV).r;
+      if (a < 0.04) discard;
+      float d = distance(uEye, vPos);
+      float f = clamp((d - uFogRange.x) / max(uFogRange.y - uFogRange.x, 1e-3), 0.0, 1.0);
+      vec3 col = mix(vec3(0.97, 0.98, 1.0), uFogColor, f * 0.8);
+      gl_FragColor = vec4(col, a * 0.62);
     }`;
 
   const SKY_HORIZON = [0.72, 0.80, 0.88];
@@ -516,6 +594,8 @@
       };
       if (!(this.prog = makeProgram(GROUND_VERT, GROUND_FRAG, "terrain"))) return;
       if (!(this.skyProg = makeProgram(SKY_VERT, SKY_FRAG, "sky"))) return;
+      if (!(this.decorProg = makeProgram(DECOR_VERT, DECOR_FRAG, "vegetation"))) return;
+      if (!(this.cloudProg = makeProgram(CLOUD_VERT, CLOUD_FRAG, "clouds"))) return;
 
       gl.useProgram(this.prog);
       this.aPos = gl.getAttribLocation(this.prog, "aPos");
@@ -526,11 +606,43 @@
       this.uFogColor = gl.getUniformLocation(this.prog, "uFogColor");
       this.uFogRange = gl.getUniformLocation(this.prog, "uFogRange");
       this.uWaterZ = gl.getUniformLocation(this.prog, "uWaterZ");
+      this.uCloudTex = gl.getUniformLocation(this.prog, "uCloudTex");
+      this.uShadowAmt = gl.getUniformLocation(this.prog, "uShadowAmt");
 
       gl.useProgram(this.skyProg);
       this.skyNDC = gl.getAttribLocation(this.skyProg, "aNDC");
       this.skyTopLoc = gl.getUniformLocation(this.skyProg, "uSkyTop");
       this.skyHorizonLoc = gl.getUniformLocation(this.skyProg, "uSkyHorizon");
+
+      gl.useProgram(this.decorProg);
+      this.dPos = gl.getAttribLocation(this.decorProg, "aPos");
+      this.dUV = gl.getAttribLocation(this.decorProg, "aUV");
+      this.dShade = gl.getAttribLocation(this.decorProg, "aShade");
+      this.dTint = gl.getUniformLocation(this.decorProg, "uTint");
+      this.dMVP = gl.getUniformLocation(this.decorProg, "uMVP");
+      this.dTex = gl.getUniformLocation(this.decorProg, "uTex");
+      this.dEye = gl.getUniformLocation(this.decorProg, "uEye");
+      this.dFogColor = gl.getUniformLocation(this.decorProg, "uFogColor");
+      this.dFogRange = gl.getUniformLocation(this.decorProg, "uFogRange");
+
+      gl.useProgram(this.cloudProg);
+      this.cPos = gl.getAttribLocation(this.cloudProg, "aPos");
+      this.cUV = gl.getAttribLocation(this.cloudProg, "aUV");
+      this.cMVP = gl.getUniformLocation(this.cloudProg, "uMVP");
+      this.cTex = gl.getUniformLocation(this.cloudProg, "uTex");
+      this.cEye = gl.getUniformLocation(this.cloudProg, "uEye");
+      this.cFogColor = gl.getUniformLocation(this.cloudProg, "uFogColor");
+      this.cFogRange = gl.getUniformLocation(this.cloudProg, "uFogRange");
+      this.cloudBuf = gl.createBuffer();
+      this.cloudUVBuf = gl.createBuffer();
+      this.cloudTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.cloudTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                    new Uint8Array([0, 0, 0, 0]));
 
       // Sky is a single full-screen quad.
       this.skyBuf = gl.createBuffer();
@@ -550,6 +662,7 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
                     new Uint8Array([70, 95, 70, 255]));
+      this._uploadSprites();
     }
 
     /* Load the heightfield and texture for a region. */
@@ -662,12 +775,198 @@
       // upload and the draw call can never disagree.
       this.indexType = use32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
       this.mesh = { n, count: idx.length, hScale, extentKm };
+      this._storeRasters(mesh, n);
       this.waterZ = 0.0;
       this.minH = Infinity; this.maxH = -Infinity;
       for (let i = 0; i < heights.length; i++) {
         if (heights[i] < this.minH) this.minH = heights[i];
         if (heights[i] > this.maxH) this.maxH = heights[i];
       }
+    }
+
+    /* Decode the per-cell vegetation / cloud rasters sent alongside the mesh.
+     * These come straight from the simulation, so what is drawn here matches
+     * what the flora and climate models actually say about this patch. */
+    _storeRasters(mesh, n) {
+      const decode = (b64, len) => {
+        if (!b64) return null;
+        const raw = atob(b64);
+        const out = new Uint8Array(len);
+        for (let i = 0; i < len; i++) out[i] = raw.charCodeAt(i);
+        return out;
+      };
+      const cells = n * n;
+      this.rasters = {
+        trees: decode(mesh.veg && mesh.veg.trees, cells),
+        shrubs: decode(mesh.veg && mesh.veg.shrubs, cells),
+        grasses: decode(mesh.veg && mesh.veg.grasses, cells),
+        ferns: decode(mesh.veg && mesh.veg.ferns, cells),
+        cloud: decode(mesh.cloud, cells),
+        biome: decode(mesh.biome_ids, cells),
+        n,
+      };
+      this.biomeNames = mesh.biome_names || [];
+      // A new tile means new rasters: rebuild both the vegetation and the
+      // cloud deck, otherwise the previous tile's clouds would linger.
+      this._cloudBuilt = false;
+      this._buildDecor();
+    }
+
+    /* Sample a raster at model-space x/y (nearest cell). */
+    _rasterAt(r, x, y) {
+      if (!r) return 0;
+      const n = this.rasters.n;
+      const j = Math.min(n - 1, Math.max(0, Math.round((x + 1) / 2 * (n - 1))));
+      const i = Math.min(n - 1, Math.max(0, Math.round((1 - y) / 2 * (n - 1))));
+      return r[i * n + j];
+    }
+
+    /* Build billboard geometry for trees, shrubs and grass tufts.
+     *
+     * Vegetation is placed by sampling the simulation's own cover field on a
+     * jittered grid: cells with more tree cover get more trees, bare cells get
+     * none. Nothing is scattered at random over the whole map. */
+    _buildDecor() {
+      const r = this.rasters;
+      if (!r || !r.trees) return;
+      const n = r.n;
+      const slots = 96;            // candidate positions per axis
+      const maxTrees = 7000, maxShrubs = 7000, maxGrass = 9000;
+      const trees = [], shrubs = [], grass = [];
+      // Deterministic hash so the same world always grows the same forest.
+      let seed = 1234567;
+      const rnd = () => {
+        seed = (seed * 1664525 + 1013904223) & 0x7fffffff;
+        return seed / 0x7fffffff;
+      };
+      for (let gy = 0; gy < slots; gy++) {
+        for (let gx = 0; gx < slots; gx++) {
+          const x = (gx + rnd()) / slots * 2 - 1;
+          const y = (gy + rnd()) / slots * 2 - 1;
+          const j = Math.round((x + 1) / 2 * (n - 1));
+          const i = Math.round((1 - y) / 2 * (n - 1));
+          const k = i * n + j;
+          // _heights is already in metres (decimetres were divided by 10 on decode).
+          const h = this._heights[k];
+          if (h <= 0) continue;                        // no vegetation in water
+          const t = r.trees[k] / 255, s = r.shrubs[k] / 255, g = r.grasses[k] / 255;
+          // Too steep => bare rock, so skip the steepest cells.
+          const e = this._heights[k], eR = this._heights[k + 1] || e;
+          if (eR - e > 260) continue;
+          // Denser cover reads slightly darker; rnd() breaks up clones.
+          if (t > 0.08 && rnd() < Math.min(1, t * 2.6) && trees.length < maxTrees) {
+            // `w` is footprint, `sh` is height, both relative to the group.
+            // Tall thin conifers read as forest; equal-sided blobs read as toys.
+            trees.push({ x, y, h,
+                         w: 0.55 + rnd() * 0.35,
+                         sh: 0.75 + t * 0.55 + rnd() * 0.45,
+                         broad: rnd() < 0.35,
+                         shade: 0.72 + t * 0.35 + rnd() * 0.22 });
+          }
+          if (s > 0.10 && rnd() < Math.min(1, s * 1.7) && shrubs.length < maxShrubs) {
+            shrubs.push({ x, y, h,
+                          w: 0.45 + s * 0.5 + rnd() * 0.2,
+                          sh: 0.30 + s * 0.35 + rnd() * 0.15,
+                          shade: 0.80 + rnd() * 0.30 });
+          }
+          if (g > 0.12 && rnd() < Math.min(1, g * 1.6) && grass.length < maxGrass) {
+            grass.push({ x, y, h,
+                         w: 0.55 + rnd() * 0.4,
+                         sh: 0.22 + g * 0.25 + rnd() * 0.12,
+                         shade: 0.85 + rnd() * 0.28 });
+          }
+        }
+      }
+      // Two tree forms, so a forest is not one repeated silhouette.
+      const conifer = trees.filter((t) => !t.broad);
+      const broad = trees.filter((t) => t.broad);
+      this.decor = { conifer, broad, shrubs, grass };
+      this._buildDecorBuffers();
+    }
+
+    /* Smallest billboard height, in model units, that still shows up on
+     * screen. A 20 m tree at a 24 deg span is a fraction of a pixel, so at
+     * wide spans the decor stands in for a stand of trees; zoom in and it
+     * becomes the real thing. Derived from the actual camera, so it stays
+     * legible at every zoom without a magic constant. */
+    _minPlantUnits() {
+      const h = (this.canvas && this.canvas.height) || 600;
+      const worldH = 2 * Math.max(this.dist || 1.7, 0.05) * Math.tan(0.78 / 2);
+      const px = Math.max(9, h * 0.016);        // ~9 px tall at the smallest
+      return (px * worldH) / h;
+    }
+
+    _buildDecorBuffers() {
+      const gl = this.gl;
+      if (!gl || !this.decor) return;
+      // Rebuilding on zoom changes would leak GPU buffers, so release the old set.
+      if (this.decorBufs) {
+        for (const k of Object.keys(this.decorBufs)) {
+          const b = this.decorBufs[k];
+          if (!b) continue;
+          if (b.buf) gl.deleteBuffer(b.buf);
+          if (b.uv) gl.deleteBuffer(b.uv);
+          if (b.shade) gl.deleteBuffer(b.shade);
+        }
+      }
+      // One quad (two crossed billboards) per instance, built as a single
+      // triangle list so a whole forest costs one draw call.
+      const build = (items) => {
+        if (!items.length) return { buf: null, count: 0 };
+        const verts = new Float32Array(items.length * 6 * 3);
+        const uvs = new Float32Array(items.length * 6 * 2);
+        const shades = new Float32Array(items.length * 6);
+        let p = 0, q = 0, r = 0;
+        for (const it of items) {
+          const z = it.h * (this.mesh ? this.mesh.hScale : 1);
+          const sh = it.shade === undefined ? 1 : it.shade;
+          // Plants are sized in real metres, so they are honest: zoom into a
+          // small span and a 20 m tree really is a 20 m tree. At a wide span a
+          // true-to-scale tree is a fraction of a pixel, so a floor keeps it
+          // legible — it is a symbol for a forest stand at that zoom.
+          const kmPerUnit = this.mesh && this.mesh.extentKm ? this.mesh.extentKm / 2 : 20;
+          const exag = this.exaggeration || 1;
+          const realH = (it.sh === undefined ? 1 : it.sh) * PLANT_H_M / 1000 / kmPerUnit * exag;
+          const realW = (it.w === undefined ? 1 : it.w) * PLANT_W_M / 1000 / kmPerUnit * exag;
+          const floorU = this._minPlantUnits();
+          const hgt = Math.max(realH, floorU);
+          const w = Math.max(realW, floorU * 0.45);
+          // Two crossed quads = 4 triangles.
+          const quads = [[-w, 0, 1], [w, 0, 1], [-w, 0, 0], [w, 0, 0]];
+          for (let qi = 0; qi < 2; qi++) {
+            const ax = qi === 0 ? 1 : 0, ay = qi === 0 ? 0 : 1;
+            const pts = [
+              [it.x - w * ax, it.y - w * ay, z],
+              [it.x + w * ax, it.y + w * ay, z],
+              [it.x - w * ax, it.y - w * ay, z + hgt],
+              [it.x + w * ax, it.y + w * ay, z + hgt],
+            ];
+            const uvq = [[0, 0], [1, 0], [0, 1], [1, 1]];
+            const order = [0, 1, 2, 2, 1, 3];
+            for (const oi of order) {
+              verts[p++] = pts[oi][0]; verts[p++] = pts[oi][1]; verts[p++] = pts[oi][2];
+              uvs[q++] = uvq[oi][0]; uvs[q++] = uvq[oi][1];
+              shades[r++] = sh;
+            }
+          }
+        }
+        const vbuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbuf);
+        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+        const ubuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, ubuf);
+        gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+        const sbuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, sbuf);
+        gl.bufferData(gl.ARRAY_BUFFER, shades, gl.STATIC_DRAW);
+        return { buf: vbuf, uv: ubuf, shade: sbuf, count: items.length * 12 };
+      };
+      this.decorBufs = {
+        conifer: build(this.decor.conifer),
+        broad: build(this.decor.broad),
+        shrubs: build(this.decor.shrubs),
+        grass: build(this.decor.grass),
+      };
     }
 
     /* Bilinear terrain height (model units) at a model-space x/y. */
@@ -749,6 +1048,82 @@
       ];
     }
 
+    /* Procedurally drawn billboard sprites: a conifer, a round broadleaf, a
+     * shrub and a grass tuft. Generated on a 2D canvas at load time so the
+     * project stays dependency-free and ships no image assets. */
+    _makeSprite(kind) {
+      const S = 64;
+      const cv = document.createElement("canvas");
+      cv.width = S; cv.height = S;
+      const g = cv.getContext("2d");
+      const cx = S / 2, base = S - 2;
+      if (kind === "tree") {
+        // trunk
+        g.fillStyle = "#4a3524";
+        g.fillRect(cx - 2, S * 0.55, 4, S * 0.45);
+        // conifer: stacked triangles
+        for (let i = 0; i < 4; i++) {
+          const t = i / 4;
+          const y = S * (0.56 - t * 0.34);
+          const w = S * (0.42 - t * 0.30);
+          g.fillStyle = i % 2 ? "#2f6b32" : "#377a3a";
+          g.beginPath();
+          g.moveTo(cx, y - S * 0.20);
+          g.lineTo(cx - w / 2, y + S * 0.05);
+          g.lineTo(cx + w / 2, y + S * 0.05);
+          g.closePath(); g.fill();
+        }
+      } else if (kind === "broadleaf") {
+        g.fillStyle = "#5b4227";
+        g.fillRect(cx - 2.5, S * 0.5, 5, S * 0.5);
+        const blobs = [[0.50, 0.34, 0.26], [0.34, 0.46, 0.19], [0.66, 0.46, 0.19], [0.50, 0.52, 0.20]];
+        for (const [bx, by, br] of blobs) {
+          g.fillStyle = "#3d7d3a";
+          g.beginPath(); g.arc(S * bx, S * by, S * br, 0, Math.PI * 2); g.fill();
+          g.fillStyle = "rgba(120,180,90,0.45)";
+          g.beginPath(); g.arc(S * bx - S * br * 0.25, S * by - S * br * 0.25, S * br * 0.55, 0, Math.PI * 2); g.fill();
+        }
+      } else if (kind === "shrub") {
+        for (const [bx, by, br] of [[0.5, 0.62, 0.24], [0.34, 0.7, 0.17], [0.66, 0.7, 0.17]]) {
+          g.fillStyle = "#4a8a44";
+          g.beginPath(); g.arc(S * bx, S * by, S * br, 0, Math.PI * 2); g.fill();
+        }
+      } else {
+        // grass tuft: a few blades
+        g.strokeStyle = "#6fa84c";
+        g.lineWidth = 2.2;
+        for (let i = 0; i < 7; i++) {
+          const t = (i / 6 - 0.5);
+          g.beginPath();
+          g.moveTo(cx + t * S * 0.34, base);
+          g.quadraticCurveTo(cx + t * S * 0.5, S * 0.72, cx + t * S * 0.62, S * 0.40);
+          g.stroke();
+        }
+      }
+      return cv;
+    }
+
+    _uploadSprites() {
+      const gl = this.gl;
+      const make = (canvas) => {
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+        return tex;
+      };
+      this.sprites = {
+        tree: make(this._makeSprite("tree")),
+        broadleaf: make(this._makeSprite("broadleaf")),
+        shrub: make(this._makeSprite("shrub")),
+        grass: make(this._makeSprite("grass")),
+      };
+    }
+
     draw() {
       const gl = this.gl;
       if (!gl || !this.prog || !this.mesh) return;
@@ -804,11 +1179,143 @@
       // Fog starts beyond the near field and saturates at the patch edge.
       gl.uniform2f(this.uFogRange, this.dist * 1.15, this.dist * 2.9);
       gl.uniform1f(this.uWaterZ, this.waterZ);
+      // Cloud shadows: the same field that draws the deck also darkens the
+      // ground beneath it, so shade on the terrain matches the sky overhead.
+      gl.uniform1f(this.uShadowAmt, this.showClouds === false ? 0.0 : 0.42);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.cloudTex);
+      gl.uniform1i(this.uCloudTex, 1);
+      gl.activeTexture(gl.TEXTURE0);
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.uniform1i(this.uTex, 0);
       gl.drawElements(gl.TRIANGLES, this.mesh.count, this.indexType, 0);
+
+      // --- vegetation, clouds ---
+      if (this.showVegetation !== false) {
+        // Billboard size depends on camera distance, so re-derive it when the
+        // player zooms far enough for the change to matter.
+        if (this._decorDist === undefined ||
+            Math.abs(this.dist - this._decorDist) > this._decorDist * 0.12) {
+          this._decorDist = this.dist;
+          if (this.decor) this._buildDecorBuffers();
+        }
+        this._drawDecor(mvp, eye);
+      }
+      if (this.showClouds !== false) this._drawClouds(mvp, eye);
+    }
+
+    /* Billboard vegetation. Alpha-tested quads sorted back-to-front by
+     * distance so overlapping trees composite correctly. */
+    _drawDecor(mvp, eye) {
+      const gl = this.gl;
+      if (!gl || !this.decorBufs || !this.sprites) return;
+      gl.useProgram(this.decorProg);
+      gl.uniformMatrix4fv(this.dMVP, false, mvp);
+      gl.uniform3fv(this.dEye, eye);
+      gl.uniform3fv(this.dFogColor, SKY_HORIZON);
+      gl.uniform2f(this.dFogRange, this.dist * 1.15, this.dist * 2.9);
+      gl.disable(gl.CULL_FACE);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.uniform1i(this.dTex, 0);
+
+      // Depth writes are off so crossing billboards blend instead of clipping
+      // each other, while the depth *test* still hides decor behind terrain.
+      gl.depthMask(false);
+      const passes = [
+        ["conifer", this.sprites.tree, [0.82, 1.0, 0.84]],
+        ["broad", this.sprites.broadleaf, [1.0, 1.02, 0.82]],
+        ["shrubs", this.sprites.shrub, [0.95, 1.05, 0.9]],
+        ["grass", this.sprites.grass, [1.05, 1.1, 0.9]],
+      ];
+      for (const [kind, sprite, tint] of passes) {
+        const b = this.decorBufs[kind];
+        if (!b || !b.count) continue;
+        gl.bindTexture(gl.TEXTURE_2D, sprite);
+        gl.bindBuffer(gl.ARRAY_BUFFER, b.buf);
+        gl.enableVertexAttribArray(this.dPos);
+        gl.vertexAttribPointer(this.dPos, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, b.uv);
+        gl.enableVertexAttribArray(this.dUV);
+        gl.vertexAttribPointer(this.dUV, 2, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, b.shade);
+        gl.enableVertexAttribArray(this.dShade);
+        gl.vertexAttribPointer(this.dShade, 1, gl.FLOAT, false, 0, 0);
+        // One base tint per group; aShade varies it per plant.
+        if (this.dTint) gl.uniform3f(this.dTint, tint[0], tint[1], tint[2]);
+        gl.drawArrays(gl.TRIANGLES, 0, b.count);
+      }
+      gl.disable(gl.BLEND);
+      gl.depthMask(true);
+    }
+
+    /* Translucent cloud deck from the simulation's cloud-cover field. */
+    _drawClouds(mvp, eye) {
+      const gl = this.gl;
+      if (!gl || !this.rasters || !this.rasters.cloud) return;
+      if (!this._cloudBuilt) this._buildCloudPlane();
+      if (!this._cloudBuilt) return;
+      gl.useProgram(this.cloudProg);
+      gl.uniformMatrix4fv(this.cMVP, false, mvp);
+      gl.uniform3fv(this.cEye, eye);
+      gl.uniform3fv(this.cFogColor, SKY_HORIZON);
+      gl.uniform2f(this.cFogRange, this.dist * 1.15, this.dist * 2.9);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.depthMask(false);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.cloudBuf);
+      gl.enableVertexAttribArray(this.cPos);
+      gl.vertexAttribPointer(this.cPos, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.cloudUVBuf);
+      gl.enableVertexAttribArray(this.cUV);
+      gl.vertexAttribPointer(this.cUV, 2, gl.FLOAT, false, 0, 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.cloudTex);
+      gl.uniform1i(this.cTex, 0);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.depthMask(true);
+      gl.disable(gl.BLEND);
+    }
+
+    _buildCloudPlane() {
+      const gl = this.gl;
+      const r = this.rasters;
+      if (!gl || !r || !r.cloud) return;
+      const n = r.n;
+      // Upload the cloud field as a luminance alpha texture.
+      // Cloud cover is a continuous 0..1 field, but as a solid deck it would
+      // white out any humid region (some patches average 0.74). Only the
+      // thicker part of the field becomes visible cloud, so the deck reads as
+      // scattered cloud rather than fog over the whole map.
+      const rgba = new Uint8Array(n * n * 4);
+      const LO = 0.55, HI = 0.92;
+      for (let i = 0; i < n * n; i++) {
+        const raw = r.cloud[i] / 255;
+        const v = Math.max(0, Math.min(1, (raw - LO) / (HI - LO)));
+        rgba[i * 4] = 255; rgba[i * 4 + 1] = 255; rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = Math.round(v * 255);
+      }
+      gl.bindTexture(gl.TEXTURE_2D, this.cloudTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      // The deck sits above the tallest terrain so it never slices a peak.
+      // It is a fixed altitude: tying it to the camera distance made the clouds
+      // move whenever the player zoomed, which is not how a cloud base behaves.
+      const peak = Math.max(this.maxH || 0, 0);
+      const z = peak * (this.mesh ? this.mesh.hScale : 1) +
+                (this.mesh ? this.mesh.hScale * 900 : 0.12);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.cloudBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1, z, 1, -1, z, -1, 1, z, 1, 1, z,
+      ]), gl.STATIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.cloudUVBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        0, 0, 1, 0, 0, 1, 1, 1,
+      ]), gl.STATIC_DRAW);
+      this._cloudBuilt = true;
     }
   }
 

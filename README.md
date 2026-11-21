@@ -75,6 +75,13 @@ python -m pytest tests/ -q
   the simulation, so ecology and hydrology stay exact while the surface looks
   continuous. Panning far enough fetches the neighbouring tile automatically, so
   you can keep walking instead of hitting the edge of the loaded area.
+- **The landscape is populated from the simulation, not decorated.** Forests,
+  scrub and grass are placed from the same `trees / shrubs / grasses / ferns`
+  cover fields the flora model writes, so a lush river valley really is wooded
+  and a dry plateau really is bare; steep slopes and open water stay empty. A
+  translucent cloud deck is drawn from the live `cloud` field, and its shadows
+  darken the ground beneath it. Both can be toggled off. Plants are sized in
+  real metres, so they stay honest as you zoom in.
 - **11 panels:** World, Geography, Climate, Weather, Hydrology, Flora, Fauna,
   Ecosystem, Resources, Settings, History — every control performs a real
   function.

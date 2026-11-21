@@ -85,6 +85,8 @@
     // Rebuild from the cached heightfield: no server round-trip needed.
     if (ground._lastMesh) ground._buildMesh(ground._lastMesh, ground._lastSize);
   };
+  $("#ground-veg").onchange = (e) => { ground.showVegetation = e.target.checked; };
+  $("#ground-clouds").onchange = (e) => { ground.showClouds = e.target.checked; };
   $("#ground-span").oninput = (e) => {
     const span = parseFloat(e.target.value);
     $("#ground-span-val").textContent = span + "°";
