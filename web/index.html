@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project GENESIS — Phase 1: Living Planet</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">
+    <span class="logo">◉</span>
+    <div>
+      <h1>PROJECT GENESIS</h1>
+      <p>Phase 1 · Living Miniature Planet</p>
+    </div>
+  </div>
+  <div class="clock-box">
+    <div id="date" class="date">—</div>
+    <div id="season" class="season">—</div>
+  </div>
+  <div class="controls">
+    <button id="btn-pause" title="Pause / resume">⏸ Pause</button>
+    <div class="speed-group" role="group" aria-label="Simulation speed">
+      <button data-speed="0.1">0.1×</button>
+      <button data-speed="1" class="active">1×</button>
+      <button data-speed="10">10×</button>
+      <button data-speed="100">100×</button>
+    </div>
+    <button id="btn-tick" title="Advance 30 simulated days">+30d</button>
+  </div>
+  <div class="controls">
+    <select id="layer-select" title="Map layer">
+      <option value="elevation">Elevation</option>
+      <option value="biome">Biomes</option>
+      <option value="temperature">Temperature</option>
+      <option value="precipitation">Precipitation</option>
+      <option value="vegetation">Vegetation</option>
+      <option value="soil">Soil Fertility</option>
+      <option value="moisture">Soil Moisture</option>
+      <option value="water">Water Systems</option>
+      <option value="resources">Resources</option>
+      <option value="fauna">Fauna Density</option>
+      <option value="weather">Weather Now</option>
+    </select>
+    <button id="btn-view" title="Toggle globe / flat map">🗺 Map</button>
+    <button id="btn-save" title="Save world">💾 Save</button>
+    <button id="btn-load" title="Load world">📂 Load</button>
+  </div>
+</header>
+
+<main id="layout">
+  <aside id="panel">
+    <nav id="tabs">
+      <button data-tab="world" class="active">World</button>
+      <button data-tab="geography">Geography</button>
+      <button data-tab="climate">Climate</button>
+      <button data-tab="weather">Weather</button>
+      <button data-tab="hydrology">Hydrology</button>
+      <button data-tab="flora">Flora</button>
+      <button data-tab="fauna">Fauna</button>
+      <button data-tab="ecosystem">Ecosystem</button>
+      <button data-tab="resources">Resources</button>
+      <button data-tab="settings">Settings</button>
+      <button data-tab="history">History</button>
+    </nav>
+    <section id="tab-content"><p class="muted">Loading…</p></section>
+  </aside>
+
+  <section id="viewport">
+    <canvas id="globe"></canvas>
+    <canvas id="map2d" style="display:none"></canvas>
+    <div id="viewport-hint">Drag to rotate · Scroll to zoom · Click to inspect a location</div>
+    <div id="loading-overlay"><div class="spinner"></div><p>Generating planet…</p></div>
+  </section>
+
+  <aside id="inspector">
+    <h2>Location Inspector</h2>
+    <p class="muted" id="inspector-empty">Click anywhere on the planet to inspect its environment.</p>
+    <div id="inspector-body" style="display:none"></div>
+  </aside>
+</main>
+
+<footer id="statusbar">
+  <span id="stat-date">—</span>
+  <span id="stat-ocean">—</span>
+  <span id="stat-temp">—</span>
+  <span id="stat-veg">—</span>
+  <span id="stat-species">—</span>
+  <span id="stat-health">—</span>
+  <span id="stat-radius">—</span>
+  <span id="stat-traversal">—</span>
+</footer>
+
+<div id="modal" style="display:none">
+  <div class="modal-card">
+    <h3 id="modal-title">Save World</h3>
+    <div id="modal-body"></div>
+    <div class="modal-actions">
+      <button id="modal-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/globe.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
