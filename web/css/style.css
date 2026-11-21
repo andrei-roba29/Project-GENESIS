@@ -105,6 +105,7 @@ label.settings-label { display: block; font-size: 12px; color: var(--muted); mar
 .hud-coord { color: var(--accent2); font-variant-numeric: tabular-nums; }
 #ground-span, #ground-exag { flex: 1; accent-color: var(--accent); }
 #ground-back { font-size: 12px; padding: 5px 10px; }
+.hud-help { font-size: 10.5px; color: var(--muted); line-height: 1.4; margin: 1px 0 3px; }
 #season-badge {
   display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 20px;
   font-size: 10px; letter-spacing: 1px; text-transform: uppercase;

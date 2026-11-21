@@ -64,13 +64,17 @@ python -m pytest tests/ -q
 - **3D globe** (WebGL, zero dependencies) + flat-map mode, 11 data layers
   (elevation, biomes, temperature, precipitation, vegetation, soil, moisture,
   water, resources, fauna, weather).
-- **True zoom-in — 3D ground view.** Scroll toward the surface and the view
-  hands over from the globe to a rendered landscape built from the real
-  simulation heightfield: drag to orbit, dolly down into valleys, adjust the
-  region size (0.5°–40°) and vertical exaggeration. Coastlines, river valleys
-  and mountain belts keep their real positions; the fine relief on top is
-  deterministic fractal detail that never feeds back into the simulation, so
-  ecology and hydrology stay exact while the surface looks continuous.
+- **True zoom-in — 3D landscape view (strategy-game style).** Scroll toward
+  the surface and the view hands over from the globe to a low, oblique camera
+  looking *across* a landscape built from the real simulation heightfield, with
+  a sky gradient and distance fog so the world reads as continuing past the
+  loaded tile. Left-drag pans, right/shift-drag orbits, wheel zooms down toward
+  the ground; region size (0.5°–40°) and vertical exaggeration are adjustable.
+  Coastlines, river valleys and mountain belts keep their real positions; the
+  fine relief on top is deterministic fractal detail that never feeds back into
+  the simulation, so ecology and hydrology stay exact while the surface looks
+  continuous. Panning far enough fetches the neighbouring tile automatically, so
+  you can keep walking instead of hitting the edge of the loaded area.
 - **11 panels:** World, Geography, Climate, Weather, Hydrology, Flora, Fauna,
   Ecosystem, Resources, Settings, History — every control performs a real
   function.
