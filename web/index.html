@@ -17,7 +17,11 @@
   </div>
   <div class="clock-box">
     <div id="date" class="date">—</div>
-    <div id="season" class="season">—</div>
+    <div class="season-row">
+      <span id="season" class="season">—</span>
+      <span id="north-season" class="season-hemi"></span>
+      <span id="south-season" class="season-hemi"></span>
+    </div>
   </div>
   <div class="controls">
     <button id="btn-pause" title="Pause / resume">⏸ Pause</button>
@@ -70,7 +74,30 @@
   <section id="viewport">
     <canvas id="globe"></canvas>
     <canvas id="map2d" style="display:none"></canvas>
+    <canvas id="ground" style="display:none"></canvas>
     <div id="viewport-hint">Drag to rotate · Scroll to zoom · Click to inspect a location</div>
+    <div id="ground-hud" style="display:none">
+      <div class="hud-row">
+        <span class="hud-label">Ground view</span>
+        <span id="ground-coord" class="hud-coord">—</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Area</span>
+        <input type="range" id="ground-span" min="0.5" max="40" step="0.5" value="12">
+        <span id="ground-span-val" class="hud-coord">12°</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Relief</span>
+        <input type="range" id="ground-exag" min="1" max="8" step="0.5" value="3">
+        <span id="ground-exag-val" class="hud-coord">3×</span>
+      </div>
+      <div class="hud-row">
+        <span class="hud-label">Season</span>
+        <span id="ground-meta" class="hud-coord">—</span>
+      </div>
+      <button id="ground-back">← Back to globe</button>
+    </div>
+    <div id="viewer-error" style="display:none"></div>
     <div id="loading-overlay"><div class="spinner"></div><p>Generating planet…</p></div>
   </section>
 

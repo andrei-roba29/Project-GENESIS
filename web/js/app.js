@@ -14,6 +14,7 @@
   let lastVersion = -1;
   let textureImg = null;
   let selectedCell = null;
+  let globeReady = false;
 
   /* ---------------- API helpers ---------------- */
   async function api(path, opts = {}) {
@@ -30,6 +31,65 @@
   /* ---------------- globe / map ---------------- */
   const globe = new GenesisGlobe.Globe($("#globe"), (lat, lon) => inspect(lat, lon));
   const flatMap = new GenesisGlobe.FlatMap($("#map2d"), (lat, lon) => inspect(lat, lon));
+  const ground = new GenesisGlobe.GroundView($("#ground"), (g) => {
+    $("#ground-coord").textContent =
+      `${g.lat.toFixed(1)}°, ${g.lon.toFixed(1)}°`;
+  });
+  // Report an unrenderable globe instead of showing an empty void.
+  if (globe.error) showGlobeError(globe.error);
+  if (!globe.prog) showGlobeError("WebGL is unavailable in this browser");
+
+  function showGlobeError(msg) {
+    const el = $("#viewer-error");
+    if (el) { el.textContent = "3D view unavailable: " + msg; el.style.display = "block"; }
+  }
+
+  /* Deep zoom hands over to the 3D ground view automatically: the globe view
+   * is for large-scale reading, the ground view is for standing in the world. */
+  function maybeEnterGroundView() {
+    if (viewMode !== "globe" || !globeReady) return;
+    if (globe.zoom <= 1.16) enterGroundView();
+  }
+
+  function enterGroundView() {
+    const lat = selectedCell ? selectedCell.lat : globe.pickLat;
+    const lon = selectedCell ? selectedCell.lon : globe.pickLon;
+    // Rotate the globe so the point being inspected is centred, so the dive
+    // lands where the user is actually looking.
+    if (viewMode === "globe" && globe.focusOn) globe.focusOn(lat, lon);
+    viewMode = "ground";
+    $("#globe").style.display = "none";
+    $("#map2d").style.display = "none";
+    $("#ground").style.display = "block";
+    $("#ground-hud").style.display = "flex";
+    $("#viewport-hint").style.display = "none";
+    $("#btn-view").textContent = "🌐 Globe";
+    ground.load(lat, lon, parseFloat($("#ground-span").value), layer);
+  }
+
+  function exitGroundView() {
+    viewMode = "globe";
+    $("#ground").style.display = "none";
+    $("#ground-hud").style.display = "none";
+    $("#globe").style.display = "block";
+    $("#viewport-hint").style.display = "block";
+    $("#btn-view").textContent = "🗺 Map";
+    globe.zoom = 1.45;
+  }
+
+  $("#ground-back").onclick = exitGroundView;
+  $("#ground-exag").oninput = (e) => {
+    const ex = parseFloat(e.target.value);
+    $("#ground-exag-val").textContent = ex + "×";
+    ground.exaggeration = ex;
+    // Rebuild from the cached heightfield: no server round-trip needed.
+    if (ground._lastMesh) ground._buildMesh(ground._lastMesh, ground._lastSize);
+  };
+  $("#ground-span").oninput = (e) => {
+    const span = parseFloat(e.target.value);
+    $("#ground-span-val").textContent = span + "°";
+    ground.load(undefined, undefined, span, layer);
+  };
 
   function loadTexture() {
     const img = new Image();
@@ -37,13 +97,15 @@
       textureImg = img;
       globe.setTextureImage(img);
       flatMap.setImage(img);
+      globeReady = true;
     };
     img.src = `/api/texture?layer=${layer}&v=${lastVersion}`;
   }
 
   function frame() {
-    if (viewMode === "globe") globe.draw();
-    else flatMap.draw();
+    if (viewMode === "globe") { globe.draw(); maybeEnterGroundView(); }
+    else if (viewMode === "map") flatMap.draw();
+    else ground.draw();
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
@@ -58,6 +120,14 @@
       const sum = s.summary;
       $("#date").textContent = sum.date;
       $("#season").textContent = sum.season;
+      $("#north-season").innerHTML = `N: <b>${sum.season_north}</b>`;
+      $("#south-season").innerHTML = `S: <b>${sum.season_south}</b>`;
+      const meta = $("#ground-meta");
+      if (meta && viewMode === "ground") {
+        const lat = ground.lat;
+        const local = lat >= 0 ? sum.season_north : sum.season_south;
+        meta.textContent = `${local} · sun ${sum.declination_deg > 0 ? "N" : "S"}${Math.abs(sum.declination_deg).toFixed(0)}°`;
+      }
       $("#btn-pause").textContent = sum.paused ? "▶ Resume" : "⏸ Pause";
       $$(".speed-group button").forEach(b =>
         b.classList.toggle("active", parseFloat(b.dataset.speed) === sum.speed_multiplier));
@@ -89,13 +159,22 @@
     poll();
   });
   $("#btn-tick").onclick = async () => { await api("/api/tick", { method: "POST", body: { days: 30 } }); poll(); };
-  $("#layer-select").onchange = (e) => { layer = e.target.value; loadTexture(); };
+  $("#layer-select").onchange = (e) => {
+    layer = e.target.value;
+    loadTexture();
+    if (viewMode === "ground") { ground._loadedKey = null; ground.load(undefined, undefined, undefined, layer); }
+  };
   $("#btn-view").onclick = () => {
-    viewMode = viewMode === "globe" ? "map" : "globe";
-    $("#globe").style.display = viewMode === "globe" ? "block" : "none";
-    $("#map2d").style.display = viewMode === "map" ? "block" : "none";
-    $("#btn-view").textContent = viewMode === "globe" ? "🗺 Map" : "🌐 Globe";
-    if (viewMode === "map") flatMap.fit();
+    if (viewMode === "ground") { exitGroundView(); return; }
+    if (viewMode === "globe") {
+      viewMode = "map";
+      $("#globe").style.display = "none";
+      $("#map2d").style.display = "block";
+      $("#btn-view").textContent = "🌐 Globe";
+      flatMap.fit();
+    } else {
+      exitGroundView();
+    }
   };
 
   /* ---------------- tabs ---------------- */
@@ -153,9 +232,15 @@
           <h2>Climate</h2>
           <div class="kv"><span>Mean temperature</span><span>${sum.mean_temp_c}°C</span></div>
           <div class="kv"><span>Mean precipitation</span><span>${sum.mean_precip_mm} mm/yr</span></div>
-          <div class="kv"><span>Season</span><span>${sum.season}</span></div>
+          <div class="kv"><span>Northern hemisphere</span><span>${sum.season_north}</span></div>
+          <div class="kv"><span>Southern hemisphere</span><span>${sum.season_south}</span></div>
           <div class="kv"><span>Day of year</span><span>${sum.day_of_year}</span></div>
-          <p class="muted">Temperature follows insolation (latitude, axial tilt, season) minus a 6.5°C/km lapse rate. Precipitation follows the ITCZ, subtropical dry belts and westerlies, modulated by ocean distance and orographic lift. Continentality (distance from ocean) sets seasonal amplitude.</p>
+          <div class="kv"><span>Solar declination</span><span>${sum.declination_deg}°</span></div>
+          <div class="kv"><span>Mean seasonal swing</span><span>±${(sum.seasonal_amp_c / 2).toFixed(1)} °C</span></div>
+          <h3>How the seasons work</h3>
+          <p class="muted">The sub-solar point migrates between the tropics, so the two hemispheres are always in opposite seasons. Each cell's swing is scaled by latitude (the tropics barely move, mid-latitudes swing hardest), by continentality (inland areas swing more than coasts — measured on this planet's own scale), and by elevation (thinner air swings harder).</p>
+          <p class="muted">Precipitation belts migrate with the sun too: the ITCZ and the westerlies shift toward the summer hemisphere, which is why wet seasons follow the warm season.</p>
+          <p class="muted">Switch to the <b>Temperature</b> layer and let the clock run — the colour bands visibly migrate north and south with the seasons.</p>
           <h3>Temperature layer</h3>
           <p class="muted">Select “Temperature” in the layer menu to visualise the current seasonal field.</p>`;
       } else if (activeTab === "weather") {
@@ -365,6 +450,7 @@
         <div class="kv"><span>Coordinates</span><span>${c.lat}°, ${c.lon}°</span></div>
         <div class="kv"><span>Elevation</span><span>${c.elevation_m} m</span></div>
         <div class="kv"><span>Biome</span><span>${c.biome}</span></div>
+        <div class="kv"><span>Local season</span><span>${c.local_season || "—"}</span></div>
         <div class="kv"><span>Weather now</span><span>${c.weather}</span></div>
         <h3>Climate</h3>
         <div class="kv"><span>Temperature</span><span>${c.temp_c}°C</span></div>

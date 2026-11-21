@@ -139,3 +139,71 @@ def test_cell_report(world):
     for key in ("lat", "lon", "elevation_m", "biome", "temp_c", "precip_mm_year",
                 "soil", "vegetation", "water", "resources", "fauna"):
         assert key in rep
+
+
+# ---------------------------------------------------------------------------
+# Seasons: both hemispheres, latitude dependence, and real amplitude
+# ---------------------------------------------------------------------------
+def test_seasons_flip_between_hemispheres(world):
+    from genesis.climate import update_seasonal
+    p = world.planet
+    jan, jul = 15.0, 195.0
+    land = p.land
+    mid_n = land & (p.lat_grid > 35) & (p.lat_grid < 55)
+    mid_s = land & (p.lat_grid < -35) & (p.lat_grid > -55)
+    update_seasonal(p, world.cfg, jan)
+    north_jan, south_jan = float(p.temp_current[mid_n].mean()), float(p.temp_current[mid_s].mean())
+    update_seasonal(p, world.cfg, jul)
+    north_jul, south_jul = float(p.temp_current[mid_n].mean()), float(p.temp_current[mid_s].mean())
+    # The two hemispheres must be in opposite seasons.
+    assert north_jul > north_jan + 6, "northern mid-latitudes must warm in July"
+    assert south_jan > south_jul + 6, "southern mid-latitudes must warm in January"
+
+
+def test_tropics_swing_less_than_midlatitudes(world):
+    from genesis.climate import update_seasonal
+    p = world.planet
+    update_seasonal(p, world.cfg, 15.0); a = p.temp_current.copy()
+    update_seasonal(p, world.cfg, 195.0); b = p.temp_current.copy()
+    swing = np.abs(b - a)
+    trop = (np.abs(p.lat_grid) < 12) & p.land
+    mid = (np.abs(p.lat_grid) > 40) & (np.abs(p.lat_grid) < 60) & p.land
+    assert float(swing[mid].mean()) > float(swing[trop].mean()) + 4
+
+
+def test_season_names_are_opposite(world):
+    p = world.planet
+    p.sim_day = 14  # mid-January
+    assert p.season_at(1) == "Winter"
+    assert p.season_at(-1) == "Summer"
+
+
+def test_continentality_scales_with_planet_size():
+    from genesis.config import PlanetConfig
+    small = PlanetConfig(radius_km=100.0)
+    big = PlanetConfig(radius_km=6371.0)
+    # The e-folding distance must follow the planet, not be an Earth constant.
+    assert abs(small.continentality_scale_km / small.circumference_km - 0.10) < 1e-6
+    assert big.continentality_scale_km > small.continentality_scale_km * 50
+
+
+# ---------------------------------------------------------------------------
+# Surface detail: fractal relief for close-up viewing
+# ---------------------------------------------------------------------------
+def test_detail_field_is_structured_and_bounded(world):
+    from genesis import surface
+    d = surface.detail_patch(world.cfg, -30, 120, 10, 10, 128, 128)
+    assert d.shape == (128, 128)
+    assert -1.01 < d.min() and d.max() < 1.01
+    # Real structure, not flat or saturated noise.
+    assert 0.15 < float(d.std()) < 0.75
+
+
+def test_coastline_warping_creates_detail(world):
+    """A close-up must not simply trace the simulation grid's square cells."""
+    from genesis import surface
+    p = world.planet
+    rgb = surface.render_detail(world.cfg, p, "elevation", -30, 120, 8, 8, 96, 96)
+    assert rgb.shape == (96, 96, 3)
+    assert 0.0 <= rgb.min() and rgb.max() <= 1.0
+    assert float(rgb.std()) > 0.02

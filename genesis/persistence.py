@@ -13,7 +13,7 @@ import numpy as np
 
 _FLOAT_ARRAYS = [
     "elevation", "slope", "filled_elevation", "flow_accum", "dist_ocean_km",
-    "temp_mean", "temp_current", "temp_amplitude", "precip_annual",
+    "temp_mean", "temp_current", "temp_amplitude", "temp_cos_lat", "precip_annual",
     "precip_current", "humidity", "pressure", "wind_speed", "wind_dir", "cloud",
     "soil_fertility", "soil_moisture", "soil_nutrients", "soil_organic",
     "soil_acidity", "soil_depth", "soil_erosion", "soil_retention",

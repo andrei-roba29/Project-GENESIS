@@ -53,10 +53,19 @@ def compute_climate(planet, cfg: PlanetConfig, day_of_year: float | None = None)
     t_mean = np.where(land, t_mean, t_mean * 0.92 + 2.0)
     planet.temp_mean = t_mean.astype(np.float32)
 
-    # Seasonal amplitude: small over oceans, large inland.
-    amp_land = 4.0 + 26.0 * (1.0 - np.exp(-planet.dist_ocean_km / 450.0))
-    amp = np.where(land, amp_land, 3.0)
+    # Seasonal amplitude: small over oceans, large inland. Continentality is
+    # normalised by the planet's own size, so the same physics works for a
+    # 100 km miniature world and a full-size planet (see PlanetConfig).
+    cont = 1.0 - np.exp(-planet.dist_ocean_km / cfg.continentality_scale_km)
+    amp_land = cfg.seasonal_amp_min_c + cfg.seasonal_amp_range_c * cont
+    amp = np.where(land, amp_land, cfg.ocean_seasonal_amp_c)
+    # Upper-troposphere amplification: high ground has thinner air and swings
+    # harder between seasons (scaled down by the miniature plane's gravity).
+    amp = amp * (1.0 + cfg.seasonal_elevation_gain * elev_km)
     planet.temp_amplitude = amp.astype(np.float32)
+    # Seasonal range of the insolation itself, used to scale the swing by
+    # latitude so the tropics stay equable while mid-latitudes get real seasons.
+    planet.temp_cos_lat = np.cos(np.radians(lat)).astype(np.float32)
 
     # --- precipitation (annual, mm) ---
     # ITCZ band follows the declination; subtropical dry belts at ~30 deg;
@@ -115,11 +124,34 @@ def compute_climate(planet, cfg: PlanetConfig, day_of_year: float | None = None)
 
 
 def update_seasonal(planet, cfg: PlanetConfig, day_of_year: float | None = None) -> None:
-    """Refresh current temperature / precipitation for the season."""
+    """Refresh current temperature / precipitation for the season.
+
+    Both hemispheres are handled explicitly: northern summer is southern
+    winter, the tropics barely swing while mid-latitudes get the full range,
+    and land far from the sea swings harder than maritime coasts.
+    """
     doy = planet.day_of_year if day_of_year is None else day_of_year
-    phase = np.cos(2.0 * np.pi * (doy - 200.0) / 365.25)   # peak ~mid-July (N)
+    decl = declination_deg(doy, cfg.axial_tilt_deg)
+    # +1 at the June solstice, -1 at the December solstice.
+    s = np.sin(2.0 * np.pi * (doy - 80.0) / 365.25)
+
+    # Polar-equator insolation contrast grows with tilt, so the seasonal swing
+    # is strongest in high latitudes and nearly flat at the equator.
+    coslat = planet.temp_cos_lat
+    lat_factor = 1.0 - coslat ** 2 * 0.85
     hemi = np.where(planet.lat_grid >= 0, 1.0, -1.0)
-    planet.temp_current = (planet.temp_mean + planet.temp_amplitude * phase * hemi).astype(np.float32)
-    # Precipitation peaks with the local warm season near the ITCZ.
-    seasonal = 1.0 + 0.35 * phase * hemi * np.exp(-((planet.lat_grid / 25.0) ** 2))
-    planet._precip_seasonal = seasonal.astype(np.float32)
+
+    planet.temp_current = (planet.temp_mean
+                           + planet.temp_amplitude * s * lat_factor * hemi).astype(np.float32)
+
+    # Precipitation follows the weather belts, which migrate with the sun:
+    # the ITCZ and the westerlies shift toward the summer hemisphere.
+    shift = decl * 0.6
+    itcz = np.exp(-(((planet.lat_grid - shift) / 13.0) ** 2))
+    west = np.exp(-(((np.abs(planet.lat_grid - shift) - 55.0) / 16.0) ** 2))
+    season_norm = cfg.seasonal_precip_amplitude
+    planet._precip_seasonal = (1.0 + season_norm * (itcz * s * 1.4
+                                                    + west * s * hemi * 0.55)).astype(np.float32)
+    # Current seasonal temperature/precip factors are exposed for the UI.
+    planet._declination_deg = float(decl)
+    planet._sun_season = float(s)

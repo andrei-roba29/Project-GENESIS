@@ -38,6 +38,16 @@ class PlanetConfig:
     lapse_rate_c_per_km: float = 6.5
     greenhouse_offset_c: float = 0.0
 
+    # Seasons. Every distance is expressed relative to the planet's own size
+    # (fractions of circumference), so the same physics holds for a 100 km
+    # miniature world and for a full-size planet.
+    seasonal_amp_min_c: float = 7.0        # maritime coasts (small swing)
+    seasonal_amp_range_c: float = 16.0     # extra swing for deep interiors
+    ocean_seasonal_amp_c: float = 3.0      # oceans barely swing
+    continentality_frac: float = 0.10      # e-folding distance as a share of circumference
+    seasonal_elevation_gain: float = 0.18  # thinner air swings harder (per km of elevation)
+    seasonal_precip_amplitude: float = 0.45
+
     # Fauna radius driver. Phase 1 has NO human entities; this parameter
     # stands in for the future living population so the population-dependent
     # simulation radius can be exercised and tuned. Default 2 matches the
@@ -72,6 +82,15 @@ class PlanetConfig:
         return self.circumference_km / self.movement_speed_kmh * 60.0
 
     @property
+    def continentality_scale_km(self) -> float:
+        """E-folding distance for continentality, scaled to the planet size.
+
+        On Earth this is ~0.10 of the circumference (~4000 km), which is why
+        deep continental interiors swing far harder than coasts.
+        """
+        return max(self.circumference_km * self.continentality_frac, 1.0)
+
+    @property
     def days_per_real_second(self) -> float:
         """Default clock rate: sim_years_per_real_hour -> days per second."""
         return self.sim_years_per_real_hour * 365.25 / 3600.0
@@ -103,10 +122,13 @@ PRESETS: dict[str, dict] = {
     "earthlike": dict(ocean_fraction=0.71, axial_tilt_deg=23.5, plate_count=9,
                       mountain_height_m=6500.0, continent_height_m=3200.0),
     "archipelago": dict(ocean_fraction=0.82, axial_tilt_deg=20.0, plate_count=12,
+                        seasonal_amp_min_c=6.0,
                         mountain_height_m=3500.0, continent_height_m=1800.0),
     "desert": dict(ocean_fraction=0.55, axial_tilt_deg=25.0, plate_count=7,
+                   seasonal_amp_min_c=9.0, seasonal_amp_range_c=19.0,
                    mountain_height_m=4500.0, continent_height_m=2600.0),
     "frozen": dict(ocean_fraction=0.65, axial_tilt_deg=28.0, plate_count=8,
+                   seasonal_amp_min_c=9.0, seasonal_amp_range_c=20.0,
                    mountain_height_m=5500.0, continent_height_m=2800.0,
                    greenhouse_offset_c=-12.0),
 }

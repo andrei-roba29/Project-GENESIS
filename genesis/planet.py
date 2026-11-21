@@ -60,6 +60,7 @@ class Planet:
         self.temp_mean = np.zeros((h, w), np.float32)        # deg C
         self.temp_current = np.zeros((h, w), np.float32)
         self.temp_amplitude = np.zeros((h, w), np.float32)   # seasonal amplitude
+        self.temp_cos_lat = np.zeros((h, w), np.float32)      # |cos(lat)| seasonal weight
         self.precip_annual = np.zeros((h, w), np.float32)    # mm/year
         self.precip_current = np.zeros((h, w), np.float32)   # mm/day (weather)
         self.humidity = np.zeros((h, w), np.float32)         # %
@@ -137,14 +138,18 @@ class Planet:
 
     def season(self) -> str:
         """Northern-hemisphere season name for the current day."""
+        return self.season_at(1)
+
+    def season_at(self, hemisphere: int) -> str:
+        """Season name for the given hemisphere (+1 north, -1 south)."""
         d = self.day_of_year
-        if 80 <= d < 172:
-            return "Spring"
-        if 172 <= d < 266:
-            return "Summer"
-        if 266 <= d < 355:
-            return "Autumn"
-        return "Winter"
+        north = ("Spring" if 80 <= d < 172 else
+                 "Summer" if 172 <= d < 266 else
+                 "Autumn" if 266 <= d < 355 else "Winter")
+        if hemisphere >= 0:
+            return north
+        return {"Spring": "Autumn", "Summer": "Winter",
+                "Autumn": "Spring", "Winter": "Summer"}[north]
 
     def cell_at(self, lat: float, lon: float) -> tuple[int, int]:
         """Grid indices for a geographic coordinate."""
@@ -191,6 +196,11 @@ class Planet:
             "sim_day": round(self.sim_day, 2),
             "date": self.date_string(),
             "season": self.season(),
+            "season_north": self.season_at(1),
+            "season_south": self.season_at(-1),
+            "declination_deg": round(float(getattr(self, "_declination_deg", 0.0)), 2),
+            "sun_season": round(float(getattr(self, "_sun_season", 0.0)), 3),
+            "seasonal_amp_c": round(float(self.temp_amplitude[self.land].mean()), 2) if self.land.any() else 0.0,
             "year": self.year,
             "day_of_year": self.day_of_year,
             "paused": self.cfg.paused,
