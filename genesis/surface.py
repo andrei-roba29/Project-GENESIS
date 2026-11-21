@@ -107,12 +107,13 @@ def relief_shade(field: np.ndarray, strength: float = 1.0) -> np.ndarray:
     """
     gy, gx = np.gradient(field)
     scale = 1.0 / max(float(np.abs(gx).mean() + np.abs(gy).mean()), 1e-6)
-    slope_x = gx * scale * 0.55 * strength
-    slope_y = gy * scale * 0.55 * strength
+    slope_x = gx * scale * 0.5 * strength
+    slope_y = gy * scale * 0.5 * strength
     nrm = np.sqrt(slope_x ** 2 + slope_y ** 2 + 1.0)
-    # Light from the upper-left.
-    shade = (-slope_x * 0.72 - slope_y * 0.72 + 0.85) / nrm
-    return np.clip(0.28 + 1.15 * shade, 0.0, 1.45).astype(np.float32)
+    # Light from the upper-left, matching a low afternoon sun.
+    shade = (-slope_x * 0.66 - slope_y * 0.66 + 0.9) / nrm
+    # Gentle range: keep deep shading but stop highlights blowing out to white.
+    return np.clip(0.34 + 0.92 * shade, 0.12, 1.22).astype(np.float32)
 
 
 def render_detail(cfg, planet, layer: str, lat0: float, lon0: float,
@@ -176,17 +177,18 @@ def render_detail(cfg, planet, layer: str, lat0: float, lon0: float,
     else:
         # Terrain: rock and soil from real elevation, relief from the fractal
         # hillshade, vegetation tinted in only where the ground is gentle.
+        # Palette leans warm and slightly desaturated, the way a strategy-game
+        # landscape reads at a distance, rather than saturated "map" colours.
         e = np.clip((elev + 1200.0) / 5200.0, 0.0, 1.0)
-        rock = np.stack([0.46 + 0.40 * e, 0.41 + 0.34 * e, 0.33 + 0.34 * e], axis=-1)
+        rock = np.stack([0.50 + 0.34 * e, 0.45 + 0.30 * e, 0.36 + 0.30 * e], axis=-1)
         # Vegetation is strong on flats, weak on cliffs (rock shows through).
         g = np.clip(veg, 0.0, 1.0) * 0.92 * (1.0 - 0.75 * steep)
-        # Lowland foliage is deeper green, high ground more olive; the detail
-        # field varies it so a forest is not one flat colour.
+        # Grassland -> meadow -> deep forest, warmed by a low sun.
         tint = d * 0.5 + 0.5
         green = np.stack([
-            0.10 + 0.26 * e + 0.12 * tint,
-            0.30 + 0.20 * e + 0.14 * tint,
-            0.09 + 0.10 * e + 0.06 * tint,
+            0.17 + 0.24 * e + 0.10 * tint,
+            0.36 + 0.20 * e + 0.12 * tint,
+            0.12 + 0.09 * e + 0.05 * tint,
         ], axis=-1)
         land_rgb = rock * (1.0 - g[..., None]) + green * g[..., None]
         # Sand at the waterline, snow high up.

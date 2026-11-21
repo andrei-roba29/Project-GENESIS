@@ -207,3 +207,84 @@ def test_coastline_warping_creates_detail(world):
     assert rgb.shape == (96, 96, 3)
     assert 0.0 <= rgb.min() and rgb.max() <= 1.0
     assert float(rgb.std()) > 0.02
+
+
+# ---------------------------------------------------------------------------
+# Regression guards for the blank ground view
+#
+# These are static checks on the shipped frontend source: the two bugs that
+# made the 3D ground view render nothing were both one-line mistakes that no
+# Python-level test could otherwise catch.
+# ---------------------------------------------------------------------------
+import os
+import re
+
+_GLOBE_JS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "web", "js", "globe.js")
+
+
+def _globe_source():
+    with open(_GLOBE_JS, encoding="utf-8") as f:
+        return f.read()
+
+
+def test_ground_texture_handle_is_never_replaced_by_a_promise_result():
+    """The GL texture is created once; load() must not overwrite the handle.
+
+    Regression: `this.texture = tex` where `tex` was the boolean `true`
+    resolved by `_loadTexture()`, which then broke `gl.bindTexture`.
+    """
+    src = _globe_source()
+    # _loadTexture must resolve with no value (the handle is created in _initGL)
+    assert "resolve(true)" not in src, "texture loader must not resolve a truthy placeholder"
+    # and the only assignments to this.texture must be a GL texture object
+    assigns = re.findall(r"this\.texture\s*=\s*([^;]+);", src)
+    for a in assigns:
+        assert a.strip() in ("null", "gl.createTexture()"), f"unexpected texture assignment: {a}"
+
+
+def test_index_buffer_type_matches_what_is_drawn():
+    """Index upload and drawElements must agree on the element type.
+
+    Regression: a Uint32Array was uploaded but UNSIGNED_SHORT was passed to
+    drawElements, so the GPU read garbage indices.
+    """
+    src = _globe_source()
+    assert "this.indexType" in src, "index type must be recorded when uploading"
+    assert re.search(r"drawElements\([^)]*this\.indexType", src), \
+        "drawElements must reuse the recorded index type"
+    # The upload must pick 16-bit whenever the vertex count fits, as it does for
+    # the 240x240 ground patch (57,600 vertices).
+    assert "use32" in src and "Uint16Array" in src, "16-bit indices must be used when possible"
+
+
+def test_ground_shaders_avoid_undeclared_webgl_builtins():
+    """Raw WebGL has no cameraPosition / projectionMatrix uniforms."""
+    src = _globe_source()
+    shaders = re.findall(r"const \w+_(?:VERT|FRAG) = `(.*?)`", src, re.S)
+    assert shaders, "expected shader sources in globe.js"
+    for body in shaders:
+        for builtin in ("cameraPosition", "projectionMatrix", "modelViewMatrix", "normalMatrix"):
+            assert builtin not in body, f"undeclared built-in {builtin} would fail to compile"
+
+
+def test_every_shader_uniform_field_is_supplied():
+    """Each uniform the shader declares must be assigned by JS."""
+    src = _globe_source()
+    shaders = re.findall(r"const \w+_(?:VERT|FRAG) = `(.*?)`", src, re.S)
+    declared = set()
+    for body in shaders:
+        declared |= set(re.findall(r"uniform\s+\w+\s+(\w+)\s*;", body))
+    used = set(re.findall(r"uniform\w*\(\s*this\.(\w+)", src))
+    lookups = set(re.findall(r'getUniformLocation\([^,]+,\s*"(\w+)"\)', src))
+    missing = declared - lookups
+    assert not missing, f"shader uniforms never looked up: {sorted(missing)}"
+
+
+def test_ground_mesh_uvs_are_not_flipped_relative_to_rows():
+    """The texture upload and the mesh V coordinates must use one convention."""
+    src = _globe_source()
+    # We upload without flipping, so mesh V must follow row order (i), not 1-i.
+    assert "UNPACK_FLIP_Y_WEBGL, false" in src
+    assert re.search(r"uv\[k \* 2 \+ 1\] = i / \(n - 1\);", src), \
+        "V must track the image row index when the upload is not flipped"

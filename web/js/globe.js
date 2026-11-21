@@ -407,12 +407,18 @@
    * actual landscape rather than a stretched texture. Drag orbits, wheel
    * dollies; the camera can descend into valleys.
    */
+  /* ---------------- 3D ground view (Age of Empires III style) ----------------
+   * A low, oblique camera looking across a landscape built from the real
+   * simulation heightfield. Left-drag pans, right/shift-drag orbits, wheel
+   * zooms. Distance fog melts the patch edge into the sky so the world reads
+   * as continuing beyond the loaded tile.
+   */
   const GROUND_VERT = `
     attribute vec3 aPos;
     attribute vec2 aUV;
+    uniform mat4 uMVP;
     varying vec2 vUV;
     varying vec3 vPos;
-    uniform mat4 uMVP;
     void main() {
       vUV = aUV;
       vPos = aPos;
@@ -422,63 +428,120 @@
   const GROUND_FRAG = `
     precision mediump float;
     uniform sampler2D uTex;
-    uniform vec3 uSun;
+    uniform vec3 uEye;
+    uniform vec3 uFogColor;
+    uniform vec2 uFogRange;
     uniform float uWaterZ;
     varying vec2 vUV;
     varying vec3 vPos;
     void main() {
       vec4 tex = texture2D(uTex, vUV);
-      // Gentle slope shading from the per-vertex normals is baked into the
-      // texture; keep the surface readable with a soft ambient term.
       vec3 col = tex.rgb;
+      // Water sits below sea level: tint it and darken with depth.
       if (vPos.z < uWaterZ) {
-        float depth = clamp((uWaterZ - vPos.z) * 0.08, 0.0, 0.6);
-        col = mix(col, vec3(0.06, 0.26, 0.48), 0.55 + depth);
+        float depth = clamp((uWaterZ - vPos.z) * 2.5, 0.0, 0.65);
+        col = mix(col, vec3(0.05, 0.24, 0.42), 0.45 + depth);
       }
-      gl_FragColor = vec4(col, 1.0);
+      // Aerial perspective: distant ground fades into the sky colour.
+      float d = distance(uEye, vPos);
+      float f = clamp((d - uFogRange.x) / max(uFogRange.y - uFogRange.x, 1e-3), 0.0, 1.0);
+      f = f * f;
+      gl_FragColor = vec4(mix(col, uFogColor, f * 0.9), 1.0);
     }`;
+
+  const SKY_VERT = `
+    attribute vec2 aNDC;
+    varying float vY;
+    void main() {
+      vY = aNDC.y * 0.5 + 0.5;
+      gl_Position = vec4(aNDC, 0.9999, 1.0);
+    }`;
+
+  const SKY_FRAG = `
+    precision mediump float;
+    varying float vY;
+    uniform vec3 uSkyTop;
+    uniform vec3 uSkyHorizon;
+    void main() {
+      float t = pow(clamp(vY, 0.0, 1.0), 0.7);
+      gl_FragColor = vec4(mix(uSkyHorizon, uSkyTop, t), 1.0);
+    }`;
+
+  const SKY_HORIZON = [0.72, 0.80, 0.88];
+  const SKY_TOP = [0.34, 0.55, 0.80];
 
   class GroundView {
     constructor(canvas, onChange) {
       this.canvas = canvas;
       this.onChange = onChange || (() => {});
       this.gl = canvas.getContext("webgl", { antialias: true });
-      this.lat = 20; this.lon = 30; this.span = 12;
-      this.yaw = Math.PI * 0.25; this.pitch = 0.62; this.dist = 2.1;
-      this.texture = null; this.mesh = null;
-      this.exaggeration = 3.0; this.loading = false; this._pending = null;
-      this._dirtyView = false;
+      this.lat = 20; this.lon = 30; this.span = 24;
+      // Camera state. AoE3-ish: low oblique angle, telephoto-ish FOV.
+      this.yaw = 0;
+      this.pitch = 0.58;          // radians above the ground plane
+      this.dist = 1.7;
+      this.offsetX = 0; this.offsetY = 0;   // pan within the loaded patch
+      this.exaggeration = 4.0;
+      this.mesh = null; this.texture = null; this.loading = false;
+      this.error = null;
+      this._heights = null;
       if (this.gl) { this._initGL(); this._bindInput(); }
     }
 
     _initGL() {
       const gl = this.gl;
-      const sh = (t, src) => {
-        const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s);
+      const sh = (t, src, label) => {
+        const s = gl.createShader(t);
+        gl.shaderSource(s, src); gl.compileShader(s);
         if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-          this.error = gl.getShaderInfoLog(s);
+          this.error = `${label}: ${gl.getShaderInfoLog(s)}`;
           console.error("GroundView shader:", this.error);
+          return null;
         }
         return s;
       };
-      const prog = gl.createProgram();
-      gl.attachShader(prog, sh(gl.VERTEX_SHADER, GROUND_VERT));
-      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, GROUND_FRAG));
-      gl.linkProgram(prog);
-      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-        this.error = gl.getProgramInfoLog(prog);
-        return;
-      }
-      this.prog = prog;
-      gl.useProgram(prog);
-      this.aPos = gl.getAttribLocation(prog, "aPos");
-      this.aUV = gl.getAttribLocation(prog, "aUV");
-      this.uMVP = gl.getUniformLocation(prog, "uMVP");
-      this.uTex = gl.getUniformLocation(prog, "uTex");
-      this.uWaterZ = gl.getUniformLocation(prog, "uWaterZ");
+      const makeProgram = (vsSrc, fsSrc, label) => {
+        const vs = sh(gl.VERTEX_SHADER, vsSrc, label + " vertex");
+        const fs = sh(gl.FRAGMENT_SHADER, fsSrc, label + " fragment");
+        if (!vs || !fs) return null;
+        const prog = gl.createProgram();
+        gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+          this.error = `${label}: ${gl.getProgramInfoLog(prog)}`;
+          console.error("GroundView link:", this.error);
+          return null;
+        }
+        return prog;
+      };
+      if (!(this.prog = makeProgram(GROUND_VERT, GROUND_FRAG, "terrain"))) return;
+      if (!(this.skyProg = makeProgram(SKY_VERT, SKY_FRAG, "sky"))) return;
+
+      gl.useProgram(this.prog);
+      this.aPos = gl.getAttribLocation(this.prog, "aPos");
+      this.aUV = gl.getAttribLocation(this.prog, "aUV");
+      this.uMVP = gl.getUniformLocation(this.prog, "uMVP");
+      this.uTex = gl.getUniformLocation(this.prog, "uTex");
+      this.uEye = gl.getUniformLocation(this.prog, "uEye");
+      this.uFogColor = gl.getUniformLocation(this.prog, "uFogColor");
+      this.uFogRange = gl.getUniformLocation(this.prog, "uFogRange");
+      this.uWaterZ = gl.getUniformLocation(this.prog, "uWaterZ");
+
+      gl.useProgram(this.skyProg);
+      this.skyNDC = gl.getAttribLocation(this.skyProg, "aNDC");
+      this.skyTopLoc = gl.getUniformLocation(this.skyProg, "uSkyTop");
+      this.skyHorizonLoc = gl.getUniformLocation(this.skyProg, "uSkyHorizon");
+
+      // Sky is a single full-screen quad.
+      this.skyBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+
+      gl.useProgram(this.prog);
       this.posBuf = gl.createBuffer();
       this.uvBuf = gl.createBuffer();
       this.idxBuf = gl.createBuffer();
+
       this.texture = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -486,10 +549,10 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-                    new Uint8Array([60, 90, 70, 255]));
+                    new Uint8Array([70, 95, 70, 255]));
     }
 
-    /* Move to a new region and fetch its heightfield + texture. */
+    /* Load the heightfield and texture for a region. */
     async load(lat, lon, span, layer) {
       this.layer = layer || this.layer || "elevation";
       if (lat !== undefined) this.lat = lat;
@@ -499,37 +562,42 @@
       if (key === this._loadedKey) return;
       this._loadedKey = key;
       this.loading = true;
+      this.error = null;
       try {
-        const size = 192;
-        const [mesh, tex] = await Promise.all([
-          fetch(`/api/region?lat=${this.lat}&lon=${this.lon}&span=${this.span}&size=${size}&layer=${this.layer}`).then(r => r.json()),
-          this._loadTexture(),
-        ]);
-        this.extentKm = mesh.span / 360 * 2 * Math.PI * mesh.radius_km;
-        // Keep the heightfield so the relief slider can rebuild without a
-        // server round-trip; set it before building so a rebuild always has it.
+        const size = 240;   // 240^2 = 57,600 vertices: safely inside uint16
+        const mesh = await fetch(
+          `/api/region?lat=${this.lat}&lon=${this.lon}&span=${this.span}&size=${size}&layer=${this.layer}`
+        ).then((r) => r.json());
+        this.extentKm = (mesh.span / 360) * 2 * Math.PI * mesh.radius_km;
         this._lastMesh = mesh;
         this._lastSize = size;
         this._buildMesh(mesh, size);
-        this.texture = tex;
-      } catch (e) { console.warn("ground load failed", e); }
+        await this._loadTexture();
+      } catch (e) {
+        this.error = String(e && e.message ? e.message : e);
+        console.warn("ground load failed", e);
+      }
       this.loading = false;
       this.onChange(this);
     }
 
+    /* Upload the texture into the existing GL texture object.
+     * NOTE: returns nothing — the GL texture handle is created once in
+     * _initGL and must never be replaced by a promise result. */
     _loadTexture() {
       return new Promise((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
           const gl = this.gl;
-          if (!gl) return resolve(null);
+          if (!gl) return resolve();
           gl.bindTexture(gl.TEXTURE_2D, this.texture);
+          // Source rows run north -> south; with no flip, row 0 lands at t=0,
+          // which the mesh maps to its northern edge (see _buildMesh UVs).
           gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-          resolve(true);
+          resolve();
         };
-        img.onerror = reject;
-        // Cache-bust on layer + region so the browser never shows a stale patch.
+        img.onerror = () => reject(new Error("region texture failed"));
         img.src = `/api/region/texture?lat=${this.lat}&lon=${this.lon}` +
                   `&span=${this.span}&w=512&h=512&layer=${this.layer}`;
       });
@@ -541,34 +609,39 @@
       const raw = atob(mesh.elevation);
       const bytes = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      // Little-endian int16 decimetres, as sent by the server.
       const dm = new Int16Array(bytes.buffer);
-      const heights = Array.from(dm, v => v / 10.0);
+      const heights = new Float32Array(dm.length);
+      for (let i = 0; i < dm.length; i++) heights[i] = dm[i] / 10.0;
+      this._heights = heights;
+      this._meshSize = size;
 
-      // Normalise the patch into a -1..1 square: 2 model units span the whole
-      // region, so one model unit = extentKm/2 kilometres. Vertical relief is
-      // scaled the same way and then multiplied by the exaggeration factor.
       const n = size;
+      // The patch occupies 2x2 model units, so one unit is extentKm/2 km.
       const extentKm = (mesh.span / 360) * 2 * Math.PI * mesh.radius_km;
       const kmPerUnit = Math.max(extentKm, 1e-6) / 2.0;
-      const exag = this.exaggeration;
-      // height_m -> km -> model units, exaggerated.
-      const hScale = (1 / 1000.0) / kmPerUnit * exag;
+      // metres -> km -> model units, then exaggerated for legibility.
+      const hScale = (1 / 1000.0) / kmPerUnit * this.exaggeration;
+
       const pos = new Float32Array(n * n * 3);
       const uv = new Float32Array(n * n * 2);
-      let minH = Infinity, maxH = -Infinity;
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n; j++) {
           const k = i * n + j;
-          const h = heights[k];
-          minH = Math.min(minH, h); maxH = Math.max(maxH, h);
+          // i runs north -> south, j runs west -> east.
           pos[k * 3] = (j / (n - 1)) * 2 - 1;
           pos[k * 3 + 1] = 1 - (i / (n - 1)) * 2;
-          pos[k * 3 + 2] = h * hScale;
+          pos[k * 3 + 2] = heights[k] * hScale;
           uv[k * 2] = j / (n - 1);
-          uv[k * 2 + 1] = 1 - i / (n - 1);
+          // Texture t=0 holds the image's first row, which is the north edge.
+          uv[k * 2 + 1] = i / (n - 1);
         }
       }
-      const idx = new Uint32Array((n - 1) * (n - 1) * 6);
+
+      const use32 = n * n > 65535;
+      const idx = use32
+        ? new Uint32Array((n - 1) * (n - 1) * 6)
+        : new Uint16Array((n - 1) * (n - 1) * 6);
       let p = 0;
       for (let i = 0; i < n - 1; i++) {
         for (let j = 0; j < n - 1; j++) {
@@ -577,34 +650,103 @@
           idx[p++] = b; idx[p++] = c; idx[p++] = d;
         }
       }
+
       gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
       gl.bufferData(gl.ARRAY_BUFFER, pos, gl.STATIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuf);
       gl.bufferData(gl.ARRAY_BUFFER, uv, gl.STATIC_DRAW);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuf);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
-      this.mesh = { n, count: idx.length, minH, maxH, extentKm };
-      this.waterZ = 0.0;   // sea level in the same model units
-      // Uint32 indices need an extension on WebGL1.
-      this.uintIndex = gl.getExtension("OES_element_index_uint") && n * n > 65535;
+
+      // The index type is decided here and reused verbatim by draw(), so the
+      // upload and the draw call can never disagree.
+      this.indexType = use32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+      this.mesh = { n, count: idx.length, hScale, extentKm };
+      this.waterZ = 0.0;
+      this.minH = Infinity; this.maxH = -Infinity;
+      for (let i = 0; i < heights.length; i++) {
+        if (heights[i] < this.minH) this.minH = heights[i];
+        if (heights[i] > this.maxH) this.maxH = heights[i];
+      }
+    }
+
+    /* Bilinear terrain height (model units) at a model-space x/y. */
+    heightAt(x, y) {
+      if (!this._heights) return 0;
+      const n = this._meshSize;
+      const u = Math.max(0, Math.min(1, (x + 1) / 2));
+      const v = Math.max(0, Math.min(1, (1 - y) / 2));
+      const fx = u * (n - 1), fy = v * (n - 1);
+      const j0 = Math.min(n - 2, Math.floor(fx)), i0 = Math.min(n - 2, Math.floor(fy));
+      const tx = fx - j0, ty = fy - i0;
+      const h = this._heights;
+      const a = h[i0 * n + j0], b = h[i0 * n + j0 + 1];
+      const c = h[(i0 + 1) * n + j0], d = h[(i0 + 1) * n + j0 + 1];
+      const metres = (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
+      return metres * (this.mesh ? this.mesh.hScale : 1);
     }
 
     _bindInput() {
       const c = this.canvas;
-      let dragging = false, lx = 0, ly = 0;
-      c.addEventListener("pointerdown", e => { dragging = true; lx = e.clientX; ly = e.clientY; c.setPointerCapture(e.pointerId); });
-      c.addEventListener("pointermove", e => {
-        if (!dragging) return;
-        this.yaw -= (e.clientX - lx) * 0.006;
-        this.pitch = Math.max(0.12, Math.min(1.45, this.pitch + (e.clientY - ly) * 0.005));
+      let dragging = false, mode = "pan", lx = 0, ly = 0;
+      c.addEventListener("contextmenu", (e) => e.preventDefault());
+      c.addEventListener("pointerdown", (e) => {
+        dragging = true;
+        mode = (e.button === 2 || e.shiftKey || e.ctrlKey) ? "orbit" : "pan";
         lx = e.clientX; ly = e.clientY;
+        c.setPointerCapture(e.pointerId);
+      });
+      c.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - lx, dy = e.clientY - ly;
+        lx = e.clientX; ly = e.clientY;
+        if (mode === "orbit") {
+          this.yaw += dx * 0.006;
+          this.pitch = Math.max(0.22, Math.min(1.32, this.pitch + dy * 0.004));
+        } else {
+          // Pan along the ground, scaled by zoom so the grab point stays put.
+          const k = this.dist * 0.0011;
+          const cs = Math.cos(this.yaw), sn = Math.sin(this.yaw);
+          this.offsetX -= (dx * cs - dy * sn) * k;
+          this.offsetY -= (dx * sn + dy * cs) * k;
+          this._maybeRecentre();
+        }
       });
       c.addEventListener("pointerup", () => { dragging = false; });
-      c.addEventListener("wheel", e => {
+      c.addEventListener("pointerleave", () => { dragging = false; });
+      c.addEventListener("wheel", (e) => {
         e.preventDefault();
-        // Dollying below 1.0 descends into the landscape.
-        this.dist = Math.max(0.35, Math.min(4.0, this.dist * (e.deltaY < 0 ? 0.88 : 1.12)));
+        this.dist = Math.max(0.45, Math.min(3.6, this.dist * (e.deltaY < 0 ? 0.88 : 1.14)));
       }, { passive: false });
+    }
+
+    /* When the camera wanders past the loaded tile, fetch the tile the
+     * landscape actually needs. Keeps panning continuous instead of hitting
+     * the edge of the world after two drags. */
+    _maybeRecentre() {
+      const limit = 0.42;
+      if (Math.abs(this.offsetX) < limit && Math.abs(this.offsetY) < limit) return;
+      const dLat = this.offsetY * (this.span / 2);
+      const cosLat = Math.max(0.2, Math.cos(this.lat * Math.PI / 180));
+      const dLon = this.offsetX * (this.span / 2) / cosLat;
+      let lat = this.lat + dLat;
+      let lon = this.lon + dLon;
+      lat = Math.max(-85, Math.min(85, lat));
+      while (lon > 180) lon -= 360;
+      while (lon < -180) lon += 360;
+      this.offsetX = 0; this.offsetY = 0;
+      this.lat = lat; this.lon = lon;
+      this.load();
+    }
+
+    _eye() {
+      const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
+      // yaw 0 looks north (+y); the camera sits behind the target.
+      return [
+        this.offsetX + Math.sin(this.yaw) * this.dist * cp,
+        this.offsetY - Math.cos(this.yaw) * this.dist * cp,
+        this.dist * sp,
+      ];
     }
 
     draw() {
@@ -612,36 +754,61 @@
       if (!gl || !this.prog || !this.mesh) return;
       const c = this.canvas;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      if (c.width !== c.clientWidth * dpr) { c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr; }
+      if (c.width !== Math.round(c.clientWidth * dpr) ||
+          c.height !== Math.round(c.clientHeight * dpr)) {
+        c.width = Math.round(c.clientWidth * dpr);
+        c.height = Math.round(c.clientHeight * dpr);
+      }
       gl.viewport(0, 0, c.width, c.height);
-      gl.clearColor(0.05, 0.07, 0.10, 1.0);
+      gl.clearColor(SKY_HORIZON[0], SKY_HORIZON[1], SKY_HORIZON[2], 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-      gl.enable(gl.DEPTH_TEST);
-      gl.useProgram(this.prog);
 
+      // --- sky gradient (no depth interaction) ---
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      gl.useProgram(this.skyProg);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuf);
+      gl.enableVertexAttribArray(this.skyNDC);
+      gl.vertexAttribPointer(this.skyNDC, 2, gl.FLOAT, false, 0, 0);
+      gl.uniform3fv(this.skyTopLoc, SKY_TOP);
+      gl.uniform3fv(this.skyHorizonLoc, SKY_HORIZON);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      gl.depthMask(true);
+      gl.enable(gl.DEPTH_TEST);
+
+      // --- terrain ---
+      const eye = this._eye();
+      // Keep the camera above the ground it is flying over.
+      if (this._heights) {
+        const ground = this.heightAt(eye[0], eye[1]);
+        if (eye[2] < ground + 0.06) eye[2] = ground + 0.06;
+      }
+      const target = [this.offsetX, this.offsetY, 0.04];
       const aspect = c.width / c.height;
-      const proj = mat4Perspective(1.0, aspect, 0.01, 50);
-      const eye = [Math.sin(this.yaw) * this.dist * Math.cos(this.pitch),
-                   Math.cos(this.yaw) * this.dist * Math.cos(this.pitch),
-                   this.dist * Math.sin(this.pitch) + 0.35];
-      const view = lookAt(eye, [0, 0, 0.1], [0, 0, 1]);
+      const proj = mat4Perspective(0.78, aspect, 0.01, 60);
+      const view = lookAt(eye, target, [0, 0, 1]);
       const mvp = mat4Multiply(proj, view);
 
+      gl.useProgram(this.prog);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
-      gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
       gl.enableVertexAttribArray(this.aPos);
+      gl.vertexAttribPointer(this.aPos, 3, gl.FLOAT, false, 0, 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.uvBuf);
-      gl.vertexAttribPointer(this.aUV, 2, gl.FLOAT, false, 0, 0);
       gl.enableVertexAttribArray(this.aUV);
+      gl.vertexAttribPointer(this.aUV, 2, gl.FLOAT, false, 0, 0);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.idxBuf);
+
       gl.uniformMatrix4fv(this.uMVP, false, mvp);
+      gl.uniform3fv(this.uEye, eye);
+      gl.uniform3fv(this.uFogColor, SKY_HORIZON);
+      // Fog starts beyond the near field and saturates at the patch edge.
+      gl.uniform2f(this.uFogRange, this.dist * 1.15, this.dist * 2.9);
       gl.uniform1f(this.uWaterZ, this.waterZ);
+
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.uniform1i(this.uTex, 0);
-      const type = (this.uintIndex && this.mesh.n * this.mesh.n > 65535) ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
-      if (type === gl.UNSIGNED_SHORT && this.mesh.n * this.mesh.n > 65535) return;
-      gl.drawElements(gl.TRIANGLES, this.mesh.count, type, 0);
+      gl.drawElements(gl.TRIANGLES, this.mesh.count, this.indexType, 0);
     }
   }
 
