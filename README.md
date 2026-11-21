@@ -50,6 +50,7 @@ python -m pytest tests/ -q
 | **Geography** | Tectonic plates (Voronoi seeds + velocities): convergent boundaries → mountain belts, divergent → rifts. Multi-scale fractal + ridged noise on the sphere. Sea level tuned to the target ocean fraction. |
 | **Hydrology** | Barnes priority-flood depression filling, D8 flow accumulation + Strahler order. Rivers follow drainage (never drawn arbitrarily); lakes sit in filled depressions; wetlands fringe water; glaciers high & cold. |
 | **Climate** | Insolation from latitude/tilt/season; temperature = insolation − 6.5 °C/km lapse rate; continentality from distance-to-ocean; precipitation from ITCZ / subtropical highs / westerlies + orographic lift; three-cell pressure & wind bands. |
+| **Seasons** | Real axial tilt physics: the two hemispheres are always in opposite seasons, the tropics barely swing while mid-latitudes swing hardest, and land far from the sea swings harder than coasts. Continentality is normalised to the planet's own circumference, so it does not depend on Earth-sized constants. Precipitation belts migrate with the sun. |
 | **Weather** | Daily stochastic phenomena — rain, heavy rain, snow, fog, thunderstorms, lightning, hail, heatwaves, cold waves, droughts, storms, floods, wildfires — each with immediate consequences (soil moisture, vegetation stress, sediment, fire scars). |
 | **Soil & resources** | Fertility, moisture, nutrients, organic matter, acidity, depth, erosion, retention evolve with climate, vegetation and slope. Freshwater, stone, sand, clay, salt, minerals, ores, timber derived from terrain & climate. |
 | **Biomes** | Rule-based from actual conditions (Whittaker-style): rainforest, savanna, temperate/boreal forest, grassland, Mediterranean, tundra, hot/cold desert, alpine, wetland, mangrove, ice cap, marine zones. |
@@ -63,6 +64,13 @@ python -m pytest tests/ -q
 - **3D globe** (WebGL, zero dependencies) + flat-map mode, 11 data layers
   (elevation, biomes, temperature, precipitation, vegetation, soil, moisture,
   water, resources, fauna, weather).
+- **True zoom-in — 3D ground view.** Scroll toward the surface and the view
+  hands over from the globe to a rendered landscape built from the real
+  simulation heightfield: drag to orbit, dolly down into valleys, adjust the
+  region size (0.5°–40°) and vertical exaggeration. Coastlines, river valleys
+  and mountain belts keep their real positions; the fine relief on top is
+  deterministic fractal detail that never feeds back into the simulation, so
+  ecology and hydrology stay exact while the surface looks continuous.
 - **11 panels:** World, Geography, Climate, Weather, Hydrology, Flora, Fauna,
   Ecosystem, Resources, Settings, History — every control performs a real
   function.
@@ -84,6 +92,7 @@ genesis/
   hydrology.py   Priority-flood, D8 flow accumulation, rivers/lakes
   climate.py     Insolation, temperature, precipitation, pressure, wind
   weather.py     Daily phenomena + consequences
+  surface.py     Fractal close-up relief + terrain texture rendering
   soil.py        Soil evolution, resources, biome classification
   flora.py       Vegetation functional groups + species catalog
   fauna.py       30-species catalog, population engine, radius
@@ -96,6 +105,13 @@ genesis/
 web/             Vanilla-JS frontend (WebGL globe, panels, charts)
 tests/           pytest suite (determinism, drainage, climate, radius, saves)
 ```
+
+## Seasons at a glance
+
+The clock shows both hemispheres (they are always opposite), plus the solar
+declination. Switch to the **Temperature** layer and let time run: the warm
+bands visibly migrate north and south. The `Climate` panel shows the model and
+the measured mean seasonal swing.
 
 ## Performance
 

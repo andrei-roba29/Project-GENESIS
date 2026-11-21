@@ -92,8 +92,26 @@ label.settings-label { display: block; font-size: 12px; color: var(--muted); mar
 
 /* ---------- viewport ---------- */
 #viewport { flex: 1; position: relative; background: radial-gradient(ellipse at center, #0d1730 0%, #05080f 75%); min-width: 0; }
-#globe, #map2d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
-#globe:active, #map2d:active { cursor: grabbing; }
+#globe, #map2d, #ground { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+#globe:active, #map2d:active, #ground:active { cursor: grabbing; }
+#ground-hud {
+  position: absolute; left: 14px; bottom: 14px; z-index: 6;
+  background: rgba(9, 15, 26, 0.88); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 12px; min-width: 240px;
+  display: flex; flex-direction: column; gap: 7px; backdrop-filter: blur(6px);
+}
+.hud-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.hud-label { color: var(--muted); min-width: 54px; }
+.hud-coord { color: var(--accent2); font-variant-numeric: tabular-nums; }
+#ground-span, #ground-exag { flex: 1; accent-color: var(--accent); }
+#ground-back { font-size: 12px; padding: 5px 10px; }
+#season-badge {
+  display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 20px;
+  font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  background: rgba(77, 163, 255, 0.18); color: var(--accent); border: 1px solid rgba(77,163,255,0.4);
+}
+#season-badge.winter { background: rgba(120,180,255,0.15); color: #9ecbff; border-color: rgba(120,180,255,0.45); }
+#season-badge.summer { background: rgba(255,184,77,0.15); color: var(--warn); border-color: rgba(255,184,77,0.45); }
 #viewport-hint {
   position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
   background: rgba(10, 16, 30, 0.8); border: 1px solid var(--border);
@@ -151,3 +169,14 @@ label.settings-label { display: block; font-size: 12px; color: var(--muted); mar
   #inspector { display: none; }
   #panel { width: 300px; }
 }
+
+/* ---------- 3D view feedback ---------- */
+#viewer-error {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  background: rgba(255, 107, 107, 0.14); border: 1px solid var(--danger);
+  color: #ffc9c9; padding: 8px 14px; border-radius: var(--radius);
+  font-size: 12px; z-index: 8; max-width: 80%;
+}
+.season-row { display: flex; align-items: center; gap: 6px; justify-content: center; }
+.season-hemi { font-size: 10px; color: var(--muted); letter-spacing: 0.5px; }
+.season-hemi b { color: var(--text); font-weight: 600; }

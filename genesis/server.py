@@ -5,6 +5,7 @@ services. Only dependency: NumPy. Start with:  python -m genesis.server
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import struct
@@ -18,7 +19,7 @@ import numpy as np
 
 from .config import PlanetConfig
 from .engine import Engine
-from . import persistence, ecology, flora, fauna
+from . import persistence, ecology, flora, fauna, surface
 from .planet import BIOME_NAMES
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,6 +45,28 @@ def _png_encode(rgba: np.ndarray) -> bytes:
             + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
             + chunk(b"IDAT", zlib.compress(raw, 6))
             + chunk(b"IEND", b""))
+
+
+def _upsample(arr: np.ndarray, factor: int = 4) -> np.ndarray:
+    """Bilinear upscale of a simulation grid for smooth globe texturing.
+
+    Rendering at the raw grid size (e.g. 180x90) makes the globe look blocky as
+    soon as you zoom; upsampling costs milliseconds and is display-only.
+    """
+    if factor <= 1:
+        return arr
+    h, w = arr.shape[:2]
+    nh, nw = h * factor, w * factor
+    rows = np.clip((np.arange(nh) + 0.5) / factor - 0.5, 0, h - 1)
+    cols = (np.arange(nw) + 0.5) / factor - 0.5
+    r0 = np.floor(rows).astype(int); r1 = np.clip(r0 + 1, 0, h - 1)
+    c0 = np.floor(cols).astype(int) % w; c1 = (c0 + 1) % w
+    fr = (rows - r0)[:, None]; fc = (cols - c0)[None, :]
+    if arr.ndim == 3:
+        fr = fr[..., None]; fc = fc[..., None]
+    top = arr[r0][:, c0] * (1 - fc) + arr[r0][:, c1] * fc
+    bot = arr[r1][:, c0] * (1 - fc) + arr[r1][:, c1] * fc
+    return (top * (1 - fr) + bot * fr).astype(arr.dtype)
 
 
 def _colormap(values: np.ndarray, stops: list[tuple[float, tuple[int, int, int]]]) -> np.ndarray:
@@ -80,8 +103,17 @@ def render_layer(layer: str) -> bytes:
         _last_texture_version = p.version
 
     land = p.land
+    # Display upsampling: smooth gradients instead of visible grid cells.
+    # Discrete layers (biomes, water flags) keep nearest-neighbour edges.
+    UP = 4
+    if layer in ("elevation", "temperature", "precipitation", "vegetation",
+                 "soil", "moisture", "resources", "fauna"):
+        land_disp = _upsample(land.astype(np.float32), UP) > 0.5
+    else:
+        land_disp = None
     if layer == "elevation":
-        v = np.clip((p.elevation + 4000.0) / 11000.0, 0, 1)
+        _el = _upsample(p.elevation, UP)
+        v = np.clip((_el + 4000.0) / 11000.0, 0, 1)
         rgb = _colormap(v, [(0.0, (8, 30, 80)), (0.36, (20, 80, 160)), (0.40, (40, 120, 60)),
                             (0.55, (120, 160, 70)), (0.70, (150, 110, 60)), (0.85, (200, 190, 180)),
                             (1.0, (255, 255, 255))])
@@ -97,24 +129,24 @@ def render_layer(layer: str) -> bytes:
         for bid, col in palette.items():
             rgb[p.biome == bid] = col
     elif layer == "temperature":
-        v = np.clip((p.temp_current + 30.0) / 70.0, 0, 1)
+        v = np.clip((_upsample(p.temp_current, UP) + 30.0) / 70.0, 0, 1)
         rgb = _colormap(v, [(0.0, (40, 40, 160)), (0.3, (60, 120, 220)), (0.5, (120, 200, 120)),
                             (0.7, (250, 200, 80)), (1.0, (220, 60, 40))])
     elif layer == "precipitation":
-        v = np.clip(p.precip_annual / 3000.0, 0, 1)
+        v = np.clip(_upsample(p.precip_annual, UP) / 3000.0, 0, 1)
         rgb = _colormap(v, [(0.0, (240, 230, 200)), (0.4, (140, 200, 230)), (1.0, (20, 60, 180))])
     elif layer == "vegetation":
-        v = np.clip(p.veg_cover, 0, 1)
+        v = np.clip(_upsample(p.veg_cover, UP), 0, 1)
         rgb = _colormap(v, [(0.0, (220, 210, 170)), (0.5, (110, 170, 80)), (1.0, (15, 90, 30))])
-        rgb[~land] = (20, 70, 140)
+        rgb[~land_disp] = (20, 70, 140)
     elif layer == "soil":
-        v = np.clip(p.soil_fertility, 0, 1)
+        v = np.clip(_upsample(p.soil_fertility, UP), 0, 1)
         rgb = _colormap(v, [(0.0, (90, 60, 40)), (0.5, (150, 110, 70)), (1.0, (60, 140, 60))])
-        rgb[~land] = (20, 70, 140)
+        rgb[~land_disp] = (20, 70, 140)
     elif layer == "moisture":
-        v = np.clip(p.soil_moisture, 0, 1)
+        v = np.clip(_upsample(p.soil_moisture, UP), 0, 1)
         rgb = _colormap(v, [(0.0, (240, 220, 180)), (0.5, (120, 180, 220)), (1.0, (15, 60, 160))])
-        rgb[~land] = (20, 70, 140)
+        rgb[~land_disp] = (20, 70, 140)
     elif layer == "water":
         rgb = np.zeros(p.elevation.shape + (3,), np.uint8)
         rgb[~land] = (20, 70, 140)
@@ -127,14 +159,15 @@ def render_layer(layer: str) -> bytes:
         v = np.zeros(p.elevation.shape)
         for r in ("freshwater", "stone", "timber", "minerals"):
             v = np.maximum(v, p.resources[r])
-        rgb = _colormap(np.clip(v, 0, 1), [(0.0, (200, 190, 160)), (0.5, (230, 170, 60)), (1.0, (200, 60, 40))])
+        rgb = _colormap(np.clip(_upsample(v, UP), 0, 1),
+                        [(0.0, (200, 190, 160)), (0.5, (230, 170, 60)), (1.0, (200, 60, 40))])
         rgb[~land] = (20, 70, 140)
     elif layer == "fauna":
         dens = np.zeros(p.elevation.shape)
         if engine.fauna is not None:
             pop = engine.fauna.populations.sum(axis=1)
             dens = pop[engine.planet.region_id]
-        v = np.clip(dens / max(float(dens.max()), 1.0), 0, 1)
+        v = np.clip(_upsample(dens, UP) / max(float(dens.max()), 1.0), 0, 1)
         rgb = _colormap(v, [(0.0, (210, 200, 170)), (0.5, (240, 160, 60)), (1.0, (190, 40, 40))])
         rgb[~land] = (20, 70, 140)
     elif layer == "weather":
@@ -156,6 +189,88 @@ def render_layer(layer: str) -> bytes:
     rgba = np.dstack([rgb, np.full(rgb.shape[:2], 255, np.uint8)]).astype(np.uint8)
     png = _png_encode(rgba)
     _texture_cache[key] = png
+    return png
+
+
+# ----------------------------------------------------------------------
+# Close-up surface detail textures (fractal, generated on demand)
+# ----------------------------------------------------------------------
+_detail_cache: dict = {}
+
+
+def render_detail(layer: str, size: int) -> bytes:
+    """High-resolution ground texture for the close-up view.
+
+    Deterministic in (seed, layer, size), so a given close-up only costs one
+    render; results are cached per world version.
+    """
+    p = engine.planet
+    if p is None:
+        raise RuntimeError("No world generated")
+    size = int(np.clip(size, 128, 2048))
+    height = max(64, size // 2)
+    key = (layer, size, p.version)
+    if key in _detail_cache:
+        return _detail_cache[key]
+    # Whole-planet view: same region renderer, full lat/lon extent.
+    rgb = surface.render_detail(engine.cfg, p, layer, 0.0, 0.0, 180.0, 360.0, size, height)
+    rgba = np.dstack([(rgb * 255.0).astype(np.uint8),
+                      np.full(rgb.shape[:2], 255, np.uint8)])
+    png = _png_encode(rgba)
+    _detail_cache[key] = png
+    if len(_detail_cache) > 24:
+        _detail_cache.clear()
+    return png
+
+
+_region_cache: dict = {}
+
+
+def region_payload(layer: str, lat0: float, lon0: float, span: float, size: int) -> dict:
+    """Heightfield + metadata for the 3D ground view of one region.
+
+    Heights are sent as int16 decimetres so a 256x256 patch costs ~128 KB.
+    """
+    p = engine.planet
+    if p is None:
+        raise RuntimeError("No world generated")
+    key = ("mesh", layer, round(lat0, 3), round(lon0, 3), round(span, 3), size, p.version)
+    if key in _region_cache:
+        return _region_cache[key]
+    lon_g, lat_g = surface._grid(lat0, lon0, span, span, size, size)
+    detail = surface.detail_patch(engine.cfg, lat0, lon0, span, span, size, size)
+    row = (90.0 - lat_g) / 180.0 * p.height - 0.5
+    col = ((lon_g + 180.0) % 360.0) / 360.0 * p.width - 0.5
+    base = surface._sample_bilinear(p.elevation, row, col)
+    height = base + detail * np.clip(np.abs(base) * 0.06 + 40.0, 40.0, 260.0)
+    dm = np.clip(height * 10.0, -32768, 32767).astype(np.int16)
+    payload = {
+        "lat": lat0, "lon": lon0, "span": span, "size": size,
+        "radius_km": engine.cfg.radius_km,
+        "elevation": base64.b64encode(dm.tobytes()).decode("ascii"),
+        "exaggeration": 6.0,
+        "min_m": float(base.min()), "max_m": float(base.max()),
+        "land_fraction": float((base > 0).mean()),
+    }
+    if len(_region_cache) > 32:
+        _region_cache.clear()
+    _region_cache[key] = payload
+    return payload
+
+
+def region_texture(layer: str, lat0: float, lon0: float, span: float, w: int, h: int) -> bytes:
+    p = engine.planet
+    if p is None:
+        raise RuntimeError("No world generated")
+    key = ("tex", layer, round(lat0, 3), round(lon0, 3), round(span, 3), w, h, p.version)
+    if key in _region_cache:
+        return _region_cache[key]
+    if layer not in LAYERS:
+        layer = "elevation"
+    rgb = surface.render_detail(engine.cfg, p, layer, lat0, lon0, span, span, w, h)
+    rgba = np.dstack([(rgb * 255.0).astype(np.uint8), np.full(rgb.shape[:2], 255, np.uint8)])
+    png = _png_encode(rgba)
+    _region_cache[key] = png
     return png
 
 
@@ -239,6 +354,30 @@ class Handler(BaseHTTPRequestHandler):
                 layer = qs.get("layer", ["elevation"])[0]
                 with _lock:
                     self._send(200, render_layer(layer), "image/png")
+            elif path == "/api/region":
+                layer = qs.get("layer", ["elevation"])[0]
+                lat0 = float(qs.get("lat", ["0"])[0])
+                lon0 = float(qs.get("lon", ["0"])[0])
+                span = float(np.clip(float(qs.get("span", ["12"])[0]), 0.25, 90.0))
+                size = int(np.clip(int(qs.get("size", ["256"])[0]), 32, 512))
+                with _lock:
+                    self._json(region_payload(layer, lat0, lon0, span, size))
+            elif path == "/api/region/texture":
+                layer = qs.get("layer", ["elevation"])[0]
+                lat0 = float(qs.get("lat", ["0"])[0])
+                lon0 = float(qs.get("lon", ["0"])[0])
+                span = float(np.clip(float(qs.get("span", ["12"])[0]), 0.25, 90.0))
+                w = int(np.clip(int(qs.get("w", ["512"])[0]), 32, 1024))
+                h = int(np.clip(int(qs.get("h", ["512"])[0]), 32, 1024))
+                with _lock:
+                    self._send(200, region_texture(layer, lat0, lon0, span, w, h), "image/png")
+            elif path == "/api/detail":
+                layer = qs.get("layer", ["elevation"])[0]
+                if layer not in LAYERS:
+                    layer = "elevation"
+                size = int(qs.get("size", ["1024"])[0])
+                with _lock:
+                    self._send(200, render_detail(layer, size), "image/png")
             elif path == "/api/geography":
                 with _lock:
                     p = engine.planet

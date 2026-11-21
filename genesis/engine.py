@@ -145,6 +145,7 @@ class Engine:
             "elevation_m": round(float(p.elevation[row, col]), 1),
             "land": bool(p.land[row, col]),
             "biome": BIOME_NAMES[int(p.biome[row, col])],
+            "local_season": p.season_at(1 if lat >= 0 else -1),
             "temp_c": round(float(p.temp_current[row, col]), 2),
             "temp_mean_c": round(float(p.temp_mean[row, col]), 2),
             "precip_mm_year": round(float(p.precip_annual[row, col]), 1),
